@@ -179,3 +179,130 @@ export type NewCategory = typeof categories.$inferInsert;
 export type Ritual = typeof rituals.$inferSelect;
 export type NewRitual = typeof rituals.$inferInsert;
 export type RitualJob = typeof ritualJobs.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Phase 2: the planner — this is the product (PLAN.md §5.1).
+//
+// cadence_templates (Phase 4) isn't here yet, so `fromTemplateId` has no FK
+// target — it's a plain nullable column reserved for that phase.
+// ---------------------------------------------------------------------------
+
+export const plans = sqliteTable(
+  "plans",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("team_id").notNull().references(() => teams.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    startDate: text("start_date").notNull(), // YYYY-MM-DD
+    endDate: text("end_date").notNull(),
+    timezone: text("timezone").notNull().default("UTC"),
+    status: text("status").notNull().default("active"), // draft|active|archived
+    icsToken: text("ics_token"), // Phase 3
+    fromTemplateId: text("from_template_id"), // Phase 4 — cadence_templates doesn't exist yet
+    primaryJobId: integer("primary_job_id").references(() => jobs.id, { onDelete: "set null" }),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
+  },
+  (t) => [index("plans_team_idx").on(t.teamId)],
+);
+
+/**
+ * One weekly slot, N rituals rotating through it — the anchor use case
+ * (PLAN.md §1.3). `byweekday` is derived from `anchorDate` at creation time
+ * rather than accepted as independent client input, so the two can never
+ * disagree (see worker/schedule.ts).
+ */
+export const slots = sqliteTable(
+  "slots",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id").notNull().references(() => plans.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    color: text("color"),
+    freq: text("freq").notNull().default("weekly"), // weekly|biweekly|monthly
+    byweekday: integer("byweekday").notNull(), // 0=Sun..6=Sat
+    nth: integer("nth"), // monthly only: 1..4, or -1 for "last"
+    startTime: text("start_time"), // HH:MM, nullable — week-granularity planning is first-class
+    durationMin: integer("duration_min"),
+    cycleLength: integer("cycle_length").notNull().default(1), // 1 = plain recurrence, 4 = the rotation
+    anchorDate: text("anchor_date").notNull(), // cycle position 0 lands here
+    activeFrom: text("active_from"),
+    activeTo: text("active_to"),
+    createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
+  },
+  (t) => [index("slots_plan_idx").on(t.planId)],
+);
+
+export const rotationItems = sqliteTable(
+  "rotation_items",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    slotId: text("slot_id").notNull().references(() => slots.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(), // 0..cycleLength-1
+    ritualId: integer("ritual_id").references(() => rituals.id, { onDelete: "set null" }),
+    label: text("label"), // theme name when no ritual is chosen yet
+  },
+  (t) => [uniqueIndex("rotation_items_slot_position_idx").on(t.slotId, t.position)],
+);
+
+/**
+ * Materialized rows, not computed on read — each carries an owner, guest,
+ * notes, and (via `reflections`) a post-hoc rating, none of which survive
+ * being recomputed from the slot definition on every request (PLAN.md §4).
+ *
+ * `slotId` is null for standalone occurrences: one-off sessions and every
+ * campaign/series, which are placed directly rather than through a
+ * recurring slot. `endDate` is what lets a campaign span weeks instead of
+ * being a single-day point (PLAN.md §1.2).
+ */
+export const occurrences = sqliteTable(
+  "occurrences",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id").notNull().references(() => plans.id, { onDelete: "cascade" }),
+    slotId: text("slot_id").references(() => slots.id, { onDelete: "set null" }),
+    ritualId: integer("ritual_id").references(() => rituals.id, { onDelete: "set null" }),
+    date: text("date").notNull(), // YYYY-MM-DD
+    endDate: text("end_date"), // spans: campaigns and multi-day sessions
+    startTime: text("start_time"),
+    durationMin: integer("duration_min"),
+    titleOverride: text("title_override"),
+    status: text("status").notNull().default("planned"), // planned|confirmed|done|skipped|cancelled
+    ownerUserId: text("owner_user_id").references(() => users.id, { onDelete: "set null" }),
+    facilitator: text("facilitator"),
+    guestName: text("guest_name"),
+    notes: text("notes"),
+    origin: text("origin").notNull().default("manual"), // rotation|manual|template|ai
+    editedAt: text("edited_at"), // non-null => protected from regeneration
+    createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
+  },
+  (t) => [
+    index("occurrences_plan_date_idx").on(t.planId, t.date),
+    index("occurrences_slot_idx").on(t.slotId),
+  ],
+);
+
+export const reflections = sqliteTable(
+  "reflections",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    occurrenceId: text("occurrence_id").notNull().references(() => occurrences.id, { onDelete: "cascade" }),
+    rating: integer("rating"), // 1-5
+    whatWorked: text("what_worked"),
+    whatDidnt: text("what_didnt"),
+    authorUserId: text("author_user_id").references(() => users.id, { onDelete: "set null" }),
+    createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
+  },
+  (t) => [index("reflections_occurrence_idx").on(t.occurrenceId)],
+);
+
+export type Plan = typeof plans.$inferSelect;
+export type NewPlan = typeof plans.$inferInsert;
+export type Slot = typeof slots.$inferSelect;
+export type NewSlot = typeof slots.$inferInsert;
+export type RotationItem = typeof rotationItems.$inferSelect;
+export type NewRotationItem = typeof rotationItems.$inferInsert;
+export type Occurrence = typeof occurrences.$inferSelect;
+export type NewOccurrence = typeof occurrences.$inferInsert;
+export type Reflection = typeof reflections.$inferSelect;
+export type NewReflection = typeof reflections.$inferInsert;

@@ -15,6 +15,13 @@
       "when": 1785608228194,
       "tag": "0001_chunky_moon_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785610188829,
+      "tag": "0002_condemned_mordo",
+      "breakpoints": true
     }
   ]
 }

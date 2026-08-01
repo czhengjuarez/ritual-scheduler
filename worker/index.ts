@@ -11,6 +11,7 @@ import {
   verifySessionToken,
 } from "./session";
 import { library } from "./library";
+import { planner } from "./planner";
 
 export interface Env {
   DB: D1Database;
@@ -77,6 +78,7 @@ app.get("/api/session", async (c) => {
 });
 
 app.route("/api", library);
+app.route("/api", planner);
 
 /**
  * SPA fallback for client-routed pages (/plan, /cadences, /library, /admin).

@@ -3,7 +3,7 @@
 A scheduler for team rituals. Teams lay out a deliberate cadence — weekly
 rotations, standalone rituals, campaigns spanning weeks — across a period of
 up to a year. See [PLAN.md](./PLAN.md) for the full design and phasing; this
-README covers Phase 0 (scaffold) only.
+README covers through Phase 2 (planner core).
 
 ## Tech stack
 
@@ -73,6 +73,22 @@ Ritual content is generated from structured data, not hand-written SQL — edit
 `scripts/seed-rituals.mjs` and re-run `node scripts/seed-rituals.mjs` to change
 it, rather than hand-editing `db/seed/seed-rituals.sql` directly.
 
+- **Phase 2** — the planner: `plans`, `slots`, `rotation_items`, `occurrences`,
+  `reflections`. Occurrence-generation date math lives in `worker/schedule.ts`
+  (unit tests: `node worker/schedule.test.mjs`) and is deliberately separate
+  from calendar-display math in `src/lib/calendar.ts` — one runs on the
+  server and drives generation, the other only lays out a grid in the browser.
+
+  D1's bound-parameter limit per statement is well below plain SQLite's
+  default — `worker/planner.ts` batches inserts (10 rows at a time) to stay
+  under it. If you see `D1_ERROR: too many SQL variables` after changing a
+  batch insert, that's what happened; lower the batch size.
+
+  The regeneration rule: editing a slot's rotation deletes and rebuilds only
+  the occurrences that are still exactly what the rotation would have
+  produced on its own — planned, unedited, rotation-origin, not yet in the
+  past. Anything a human touched survives. See PLAN.md §4.
+
 ## Authentication status
 
 There is no login yet. Every visitor gets a signed anonymous session cookie
@@ -84,18 +100,41 @@ verified-Google-token auth module already lives in that repo
 (`src/auth/`), written app-agnostic so it ports here in Phase 2 without
 rewriting. See PLAN.md §7 for the full sequencing.
 
+## The planner UI, and one deliberate scope trim
+
+`/plan` is the home screen (PLAN.md §1): create a plan, add a slot with a
+rotation of rituals, view it as a month or quarter calendar, click an
+occurrence to edit facilitator/notes/status or log a reflection. Assigning a
+ritual to a rotation position and to the calendar is done via a **picker
+(search + click)**, not drag-and-drop — same functional outcome as PLAN.md
+§3's `CycleBoard` description, without a DnD dependency for this first pass.
+True drag interactions are a natural Phase 9 polish item.
+
+Campaigns and multi-week rituals (a research week, a year-long mentorship)
+render as a separate banner list above the calendar rather than as inline
+bars across day cells — solving that overlay inside a month/quarter grid
+isn't worth it when the year grid (Phase 3) is where spans are meant to read
+as bars (PLAN.md §5.1).
+
 ## Project structure
 
 ```
-worker/          Hono API — session middleware, library routes (categories/
-                 jobs/rituals); planner/admin/ai routes in later phases
+worker/
+  index.ts       route mounting, session middleware
+  library.ts     categories/jobs/rituals routes
+  planner.ts     plans/slots/occurrences/reflections/warnings routes
+  schedule.ts    occurrence-generation date math (+ schedule.test.mjs)
+  session.ts     anonymous session cookies
 db/
   schema.ts      Drizzle schema
   migrations/
   seed/          generated seed SQL (see scripts/seed-rituals.mjs)
 scripts/         seed-rituals.mjs — edit this, not the generated .sql
 src/
-  components/    Layout, ThemeToggle, Chip, RitualCard — built on Keel tokens
-  pages/         PlanPage, CadencesPage, LibraryPage (filter/search/browse), AdminPage
-  hooks/         useTheme, useSession, useLibrary (jobs/categories/rituals)
+  components/    Layout, ThemeToggle, Chip, RitualCard, Modal — built on Keel tokens
+  pages/         PlanPage (the home screen), CadencesPage, LibraryPage, AdminPage
+  planner/       CycleEditorModal, RitualPickerModal, OccurrenceDrawer,
+                 MonthCalendar, CampaignBanner, WarningsPanel
+  hooks/         useTheme, useSession, useLibrary, usePlanner
+  lib/calendar.ts  client-side month-grid layout (display only — see above)
 ```
