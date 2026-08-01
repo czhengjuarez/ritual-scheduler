@@ -9,6 +9,7 @@ export interface PlanDto {
   endDate: string;
   timezone: string;
   status: "draft" | "active" | "archived";
+  icsToken: string | null;
   primaryJobId: number | null;
   createdAt: string;
 }
@@ -202,5 +203,14 @@ export function useWarnings(planId: string | undefined) {
     queryKey: ["warnings", planId],
     queryFn: () => getJSON<{ items: WarningDto[] }>(`/api/plans/${planId}/warnings`),
     enabled: !!planId,
+  });
+}
+
+/** Rotating invalidates the current /ics/:token.ics URL immediately (worker/ics.ts). */
+export function useRotateIcsToken(planId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => sendJSON<{ icsToken: string }>(`/api/plans/${planId}/ics-token/rotate`, "POST"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["plans"] }),
   });
 }

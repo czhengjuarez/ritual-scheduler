@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X, Star, Trash2 } from "lucide-react";
+import { X, Star, Trash2, Download } from "lucide-react";
 import { buttonClass, inputClass, labelClass, textareaClass, badgeClass } from "@ops-forward/keel";
 import { useAddReflection, useDeleteOccurrence, useUpdateOccurrence } from "../hooks/usePlanner";
 import type { OccurrenceDto } from "../hooks/usePlanner";
@@ -119,15 +119,20 @@ export function OccurrenceDrawer({ planId, occurrence, onClose }: { planId: stri
           </button>
         </div>
 
-        {occurrence.origin === "manual" && (
-          <button
-            className={buttonClass({ variant: "danger", size: "sm" })}
-            onClick={() => remove.mutate(occurrence.id, { onSuccess: onClose })}
-            disabled={remove.isPending}
-          >
-            <Trash2 size={20} strokeWidth={1.75} className="!w-4 !h-4" /> Remove from plan
-          </button>
-        )}
+        <div className="flex gap-2">
+          <a href={`/api/occurrences/${occurrence.id}/ics`} className={buttonClass({ variant: "secondary", size: "sm" })}>
+            <Download size={20} strokeWidth={1.75} className="!w-4 !h-4" /> Add to my calendar
+          </a>
+          {occurrence.origin === "manual" && (
+            <button
+              className={buttonClass({ variant: "danger", size: "sm" })}
+              onClick={() => remove.mutate(occurrence.id, { onSuccess: onClose })}
+              disabled={remove.isPending}
+            >
+              <Trash2 size={20} strokeWidth={1.75} className="!w-4 !h-4" /> Remove from plan
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { getDb, type Db } from "./db";
 import { occurrences, plans, reflections, rituals, rotationItems, slots, type Plan, type Slot, type RotationItem } from "../db/schema";
 import { deriveByweekday, generateSlotDates, todayISO, weekBucket, daysBetweenISO, addDaysISO, type Freq } from "./schedule";
+import { buildSingleEventIcs } from "./ics";
 import type { Env } from "./index";
 
 type Session = { userId: string; teamId: string };
@@ -141,6 +142,11 @@ planner.post("/plans", async (c) => {
     timezone: body.timezone ?? "UTC",
     primaryJobId: body.primaryJobId ?? null,
     createdBy: session.userId,
+    // Generated eagerly, not lazily on first ICS request: the subscribe URL
+    // should be visible in the UI the moment a plan exists, and a plan with
+    // no token would need a separate "does this plan have a feed yet" state
+    // for no real benefit (PLAN.md §5.7).
+    icsToken: crypto.randomUUID(),
   });
 
   const [plan] = await db.select().from(plans).where(eq(plans.id, id)).limit(1);
@@ -169,6 +175,22 @@ planner.patch("/plans/:planId", async (c) => {
 
   const [updated] = await db.select().from(plans).where(eq(plans.id, plan.id)).limit(1);
   return c.json({ item: updated });
+});
+
+/**
+ * Rotating the token invalidates the old subscribe URL immediately — anyone
+ * who still has it gets a 404 from the public /ics/:token.ics route below,
+ * not stale data (PLAN.md §5.7: "token is rotatable").
+ */
+planner.post("/plans/:planId/ics-token/rotate", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const plan = await getOwnedPlan(db, c.req.param("planId"), session.teamId);
+  if (!plan) return c.json({ error: "not found" }, 404);
+
+  const icsToken = crypto.randomUUID();
+  await db.update(plans).set({ icsToken }).where(eq(plans.id, plan.id));
+  return c.json({ icsToken });
 });
 
 // ─── Slots (recurring rotations) ────────────────────────────────────────────
@@ -469,6 +491,22 @@ planner.post("/occurrences/:id/reflection", async (c) => {
 
   const items = await db.select().from(reflections).where(eq(reflections.occurrenceId, owned.occurrence.id)).orderBy(asc(reflections.createdAt));
   return c.json({ items }, 201);
+});
+
+/** "Add this one occurrence to my calendar" — authenticated, unlike the public subscribe feed in worker/ics.ts. */
+planner.get("/occurrences/:id/ics", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const owned = await getOwnedOccurrence(db, c.req.param("id"), session.teamId);
+  if (!owned) return c.json({ error: "not found" }, 404);
+
+  const body = await buildSingleEventIcs(db, owned.occurrence.id);
+  if (!body) return c.json({ error: "not found" }, 404);
+
+  return c.text(body, 200, {
+    "Content-Type": "text/calendar; charset=utf-8",
+    "Content-Disposition": `attachment; filename="occurrence.ics"`,
+  });
 });
 
 // ─── Warnings ───────────────────────────────────────────────────────────────

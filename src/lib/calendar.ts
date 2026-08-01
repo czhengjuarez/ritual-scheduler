@@ -67,3 +67,72 @@ export function getMonthGrid(year: number, month: number): DayCell[][] {
 }
 
 export const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function toEpochDay(date: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  return Math.floor(new Date(y, m - 1, d).getTime() / 86_400_000);
+}
+
+export function addDaysISO(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + days);
+  return isoDate(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+}
+
+export function daysBetweenISO(a: string, b: string): number {
+  return toEpochDay(b) - toEpochDay(a);
+}
+
+export interface YearWeek {
+  index: number;
+  start: string;
+  end: string;
+  month: number; // 1-12, of `start`
+  year: number;
+}
+
+/**
+ * Week columns for the year grid — the signature view (PLAN.md §5.1): one
+ * column per 7-day span from the plan's start date, so "no occurrence this
+ * week" reads as a visibly empty cell rather than being hidden by month
+ * boundaries. `daysBetweenISO(plan.startDate, date) / 7` (floored) maps any
+ * date straight to its column index without re-walking this array.
+ */
+export function getYearWeeks(startDate: string, endDate: string): YearWeek[] {
+  const weeks: YearWeek[] = [];
+  let cur = startDate;
+  let i = 0;
+  while (cur <= endDate) {
+    const [y, m] = cur.split("-").map(Number);
+    weeks.push({ index: i, start: cur, end: addDaysISO(cur, 6), year: y, month: m });
+    cur = addDaysISO(cur, 7);
+    i++;
+  }
+  return weeks;
+}
+
+/** Groups consecutive weeks under one month label, for a header row spanning multiple columns per month. */
+export function getMonthSpans(weeks: YearWeek[]): { label: string; span: number }[] {
+  const spans: { label: string; span: number }[] = [];
+  for (const week of weeks) {
+    const label = new Date(week.year, week.month - 1, 1).toLocaleDateString(undefined, { month: "short" });
+    const last = spans.at(-1);
+    if (last && last.label === label) last.span++;
+    else spans.push({ label, span: 1 });
+  }
+  return spans;
+}
+
+const QUARTER_START_MONTHS = new Set([1, 4, 7, 10]);
+
+/**
+ * True for the first week whose month begins a calendar quarter (Jan/Apr/
+ * Jul/Oct) — real quarters, not every 13th column, so the divider doesn't
+ * drift for a plan that starts mid-quarter.
+ */
+export function isQuarterStart(weeks: YearWeek[], index: number): boolean {
+  const week = weeks[index];
+  if (!QUARTER_START_MONTHS.has(week.month)) return false;
+  const prev = weeks[index - 1];
+  return !prev || prev.month !== week.month;
+}

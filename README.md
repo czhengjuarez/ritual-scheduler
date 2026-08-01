@@ -3,7 +3,7 @@
 A scheduler for team rituals. Teams lay out a deliberate cadence — weekly
 rotations, standalone rituals, campaigns spanning weeks — across a period of
 up to a year. See [PLAN.md](./PLAN.md) for the full design and phasing; this
-README covers through Phase 2 (planner core).
+README covers through Phase 3 (year view + ICS).
 
 ## Tech stack
 
@@ -89,6 +89,22 @@ it, rather than hand-editing `db/seed/seed-rituals.sql` directly.
   produced on its own — planned, unedited, rotation-origin, not yet in the
   past. Anything a human touched survives. See PLAN.md §4.
 
+- **Phase 3** — the year grid and calendar export. No new tables: `plans.ics_token`
+  (already in the schema from Phase 2) is generated at plan creation and
+  exposed via the "Subscribe" panel. RFC 5545 formatting is pure and
+  DB-free in `worker/ics-format.ts` (unit tests: `npm run test:ics`) —
+  split out from `worker/ics.ts`'s routing/D1 code the same way
+  `schedule.ts` is split from `planner.ts`, so the formatting logic can be
+  run directly under plain Node/tsx without a Workers runtime.
+
+  The subscribe feed (`GET /ics/:token.ics`) is deliberately **outside**
+  `/api` and the session middleware — calendar apps poll it with no cookie,
+  so the token in the URL is the only authorization. Rotating it
+  (`POST /api/plans/:id/ics-token/rotate`) invalidates the old URL
+  immediately. A single occurrence can also be downloaded as its own `.ics`
+  via the authenticated `GET /api/occurrences/:id/ics` — a different route
+  for a different trust model, not the same endpoint with a flag.
+
 ## Authentication status
 
 There is no login yet. Every visitor gets a signed anonymous session cookie
@@ -111,10 +127,16 @@ ritual to a rotation position and to the calendar is done via a **picker
 True drag interactions are a natural Phase 9 polish item.
 
 Campaigns and multi-week rituals (a research week, a year-long mentorship)
-render as a separate banner list above the calendar rather than as inline
-bars across day cells — solving that overlay inside a month/quarter grid
-isn't worth it when the year grid (Phase 3) is where spans are meant to read
-as bars (PLAN.md §5.1).
+render as a separate banner list above the month/quarter calendar rather
+than as inline bars across day cells — solving that overlay inside a
+day-cell grid isn't worth it there. The **year view** (`YearGrid`, Phase 3)
+is where they render as real bars spanning their weeks, alongside one lane
+per slot across all ~52 weeks of the plan — the signature view PLAN.md §5.1
+describes: an empty stretch of cells reads at a glance as "no learning this
+quarter," which month/quarter view can't show since each only displays one
+month at a time. Quarter-boundary dividers are real calendar quarters
+(Jan/Apr/Jul/Oct), not just every 13th column, so they don't drift for a
+plan that doesn't start in January.
 
 ## Project structure
 
@@ -124,6 +146,8 @@ worker/
   library.ts     categories/jobs/rituals routes
   planner.ts     plans/slots/occurrences/reflections/warnings routes
   schedule.ts    occurrence-generation date math (+ schedule.test.mjs)
+  ics-format.ts  pure RFC 5545 formatting (+ ics.test.mjs)
+  ics.ts         /ics/:token.ics route + D1 reads (uses ics-format.ts)
   session.ts     anonymous session cookies
 db/
   schema.ts      Drizzle schema
@@ -134,7 +158,7 @@ src/
   components/    Layout, ThemeToggle, Chip, RitualCard, Modal — built on Keel tokens
   pages/         PlanPage (the home screen), CadencesPage, LibraryPage, AdminPage
   planner/       CycleEditorModal, RitualPickerModal, OccurrenceDrawer,
-                 MonthCalendar, CampaignBanner, WarningsPanel
+                 MonthCalendar, CampaignBanner, YearGrid, SubscribePanel, WarningsPanel
   hooks/         useTheme, useSession, useLibrary, usePlanner
-  lib/calendar.ts  client-side month-grid layout (display only — see above)
+  lib/calendar.ts  client-side month-grid + year-week layout (display only — see above)
 ```

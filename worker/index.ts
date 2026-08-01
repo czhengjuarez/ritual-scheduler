@@ -12,6 +12,7 @@ import {
 } from "./session";
 import { library } from "./library";
 import { planner } from "./planner";
+import { ics } from "./ics";
 
 export interface Env {
   DB: D1Database;
@@ -79,6 +80,11 @@ app.get("/api/session", async (c) => {
 
 app.route("/api", library);
 app.route("/api", planner);
+
+// Public — outside /api on purpose, so it never hits the session middleware
+// above. Calendar apps poll this with no cookie; the token in the URL is the
+// only authorization (see worker/ics.ts).
+app.route("/ics", ics);
 
 /**
  * SPA fallback for client-routed pages (/plan, /cadences, /library, /admin).
