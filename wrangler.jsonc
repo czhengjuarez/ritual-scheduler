@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ritual-builder",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2026-06-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true
+  },
+  // Anonymous session signing key (see worker/session.ts). Local dev: set in
+  // .dev.vars (gitignored). Production: wrangler secret put SESSION_SECRET
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ritual-builder",
+      "database_id": "b847296c-13e8-4973-9eea-5765831b4410",
+      "migrations_dir": "db/migrations"
+    }
+  ]
+  // Later phases (see PLAN.md §2, §8):
+  // "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "ritual-builder-assets" }]
+  // "ai": { "binding": "AI" }
+  // "vectorize": [{ "binding": "VECTORIZE", "index_name": "ritual-builder-embeddings", "remote": true }]
+}

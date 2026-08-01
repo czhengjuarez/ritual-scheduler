@@ -1,0 +1,8 @@
+# Copy to `.dev.vars` (gitignored) for local development.
+# For production set with: npx wrangler secret put SESSION_SECRET
+
+# Signs the anonymous session cookie (see worker/session.ts). Any long random
+# string; rotating it signs everyone's anonymous workspace out. Generate one
+# with:
+#   openssl rand -base64 48
+SESSION_SECRET=replace-me-with-a-long-random-string

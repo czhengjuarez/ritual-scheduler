@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@import "@ops-forward/keel/styles.css";
+
+body {
+  background: var(--of-bg-base);
+  color: var(--of-fg-default);
+}
