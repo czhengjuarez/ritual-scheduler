@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Share2 } from "lucide-react";
 import { buttonClass, cx } from "@ops-forward/keel";
 import { usePlans, useOccurrences, useSlots } from "../hooks/usePlanner";
 import { useCategories } from "../hooks/useLibrary";
@@ -11,6 +11,7 @@ import { MonthCalendar } from "../planner/MonthCalendar";
 import { CampaignBanner } from "../planner/CampaignBanner";
 import { YearGrid } from "../planner/YearGrid";
 import { SubscribePanel } from "../planner/SubscribePanel";
+import { PublishModal } from "../planner/PublishModal";
 import { addMonths, isoDate } from "../lib/calendar";
 import type { OccurrenceDto } from "../hooks/usePlanner";
 
@@ -24,6 +25,7 @@ export function PlanPage() {
   const [ref, setRef] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
   const [view, setView] = useState<View>("month");
   const [showCycleEditor, setShowCycleEditor] = useState(false);
+  const [showPublish, setShowPublish] = useState(false);
   const [selected, setSelected] = useState<OccurrenceDto | null>(null);
 
   const monthsShown = view === "quarter" ? 3 : 1;
@@ -68,6 +70,9 @@ export function PlanPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button className={buttonClass({ variant: "secondary" })} onClick={() => setShowPublish(true)}>
+            <Share2 size={20} strokeWidth={1.75} className="!w-4 !h-4" /> Publish
+          </button>
           <SubscribePanel plan={plan} />
           <button className={buttonClass({ variant: "primary" })} onClick={() => setShowCycleEditor(true)}>
             <Plus size={20} strokeWidth={1.75} className="!w-4 !h-4" /> Add slot
@@ -129,6 +134,7 @@ export function PlanPage() {
       )}
 
       {showCycleEditor && <CycleEditorModal planId={plan.id} onClose={() => setShowCycleEditor(false)} />}
+      {showPublish && <PublishModal planId={plan.id} planName={plan.name} onClose={() => setShowPublish(false)} />}
       {selected && <OccurrenceDrawer planId={plan.id} occurrence={selected} onClose={() => setSelected(null)} />}
     </div>
   );

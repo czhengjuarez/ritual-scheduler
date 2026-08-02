@@ -110,6 +110,52 @@ export function deriveByweekday(anchorDate: string): number {
   return weekdayOf(anchorDate);
 }
 
+/**
+ * The other direction of firstMatchingDate: turn a concrete slot into the
+ * portable (byweekday, nth) pattern a cadence template's definition stores
+ * (PLAN.md §4). Used when publishing a plan — the exact inverse of what
+ * clone does with firstMatchingDate.
+ */
+export function derivePattern(anchorDate: string, freq: Freq): { byweekday: number; nth: number | null } {
+  const byweekday = weekdayOf(anchorDate);
+  return { byweekday, nth: freq === "monthly" ? deriveNth(parseISODate(anchorDate)) : null };
+}
+
+/**
+ * The reverse of deriveByweekday/deriveNth: given a portable pattern
+ * (byweekday, and for monthly, nth) with no concrete date attached, find the
+ * first real date on/after `from` that matches it. This is what turns a
+ * cadence template's date-free definition (PLAN.md §4 — slots keyed by
+ * relative pattern, not an absolute anchor) into a real slot anchorDate at
+ * clone time: the clone flow calls this once per slot, then creates that
+ * slot exactly the way a user manually entering that date would.
+ */
+export function firstMatchingDate(freq: Freq, byweekday: number, nth: number | null | undefined, from: string): string {
+  if (freq !== "monthly") {
+    // Weekly and biweekly only need a starting weekday — the step size (7 vs
+    // 14 days) only matters for dates *after* this first one.
+    const delta = (byweekday - weekdayOf(from) + 7) % 7;
+    return addDaysISO(from, delta);
+  }
+
+  const start = parseISODate(from);
+  const startEpoch = toEpochDay(start);
+  let y = start.y;
+  let m = start.m;
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const candidate = nthWeekdayOfMonth(y, m, byweekday, nth ?? -1);
+    if (candidate && toEpochDay(candidate) >= startEpoch) return fromEpochDay(toEpochDay(candidate));
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
+    }
+  }
+  // Unreachable in practice: nthWeekdayOfMonth resolves every month for any
+  // nth in [1..4, -1], so a match appears within a handful of iterations.
+  throw new Error(`firstMatchingDate: no match for byweekday=${byweekday} nth=${nth} from=${from}`);
+}
+
 const MAX_ITERATIONS = 400; // safety cap; a 1-year weekly plan needs ~52
 
 /**

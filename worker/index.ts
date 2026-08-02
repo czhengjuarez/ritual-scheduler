@@ -12,6 +12,7 @@ import {
 } from "./session";
 import { library } from "./library";
 import { planner } from "./planner";
+import { cadences } from "./cadences";
 import { ics } from "./ics";
 
 export interface Env {
@@ -80,6 +81,7 @@ app.get("/api/session", async (c) => {
 
 app.route("/api", library);
 app.route("/api", planner);
+app.route("/api", cadences);
 
 // Public — outside /api on purpose, so it never hits the session middleware
 // above. Calendar apps poll this with no cookie; the token in the URL is the

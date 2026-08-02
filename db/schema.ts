@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, uniqueIndex, index, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 /**
@@ -183,8 +183,11 @@ export type RitualJob = typeof ritualJobs.$inferSelect;
 // ---------------------------------------------------------------------------
 // Phase 2: the planner — this is the product (PLAN.md §5.1).
 //
-// cadence_templates (Phase 4) isn't here yet, so `fromTemplateId` has no FK
-// target — it's a plain nullable column reserved for that phase.
+// `plans.fromTemplateId` and `cadence_templates.originPlanId` reference each
+// other — Drizzle resolves this fine because references() takes a callback,
+// evaluated lazily, not the table object itself; `cadenceTemplates` just
+// needs to exist as a binding somewhere in this module (it's defined further
+// down, with the rest of the Phase 4 tables).
 // ---------------------------------------------------------------------------
 
 export const plans = sqliteTable(
@@ -198,7 +201,7 @@ export const plans = sqliteTable(
     timezone: text("timezone").notNull().default("UTC"),
     status: text("status").notNull().default("active"), // draft|active|archived
     icsToken: text("ics_token"), // Phase 3
-    fromTemplateId: text("from_template_id"), // Phase 4 — cadence_templates doesn't exist yet
+    fromTemplateId: integer("from_template_id").references((): AnySQLiteColumn => cadenceTemplates.id, { onDelete: "set null" }),
     primaryJobId: integer("primary_job_id").references(() => jobs.id, { onDelete: "set null" }),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
@@ -306,3 +309,93 @@ export type Occurrence = typeof occurrences.$inferSelect;
 export type NewOccurrence = typeof occurrences.$inferInsert;
 export type Reflection = typeof reflections.$inferSelect;
 export type NewReflection = typeof reflections.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Phase 4: cadence templates — the primary shareable unit (PLAN.md §4).
+//
+// A whole cadence, not a single ritual, is what one team publishes and
+// another clones. `definition` is deliberately date-free and slug-keyed —
+// no plan id, no absolute dates, no ritual foreign keys — so a template
+// stays valid across databases and survives the library being re-seeded.
+// ---------------------------------------------------------------------------
+
+export interface CadenceRotationItemDef {
+  position: number;
+  ritualSlug: string | null;
+  label?: string | null;
+}
+
+export interface CadenceSlotDef {
+  name: string;
+  color?: string | null;
+  freq: "weekly" | "biweekly" | "monthly";
+  byweekday: number; // 0=Sun..6=Sat
+  nth?: number | null; // monthly only: 1..4, or -1 for "last"
+  startTime?: string | null;
+  durationMin?: number | null;
+  rotation: CadenceRotationItemDef[];
+}
+
+export interface CadenceStandaloneDef {
+  ritualSlug: string | null;
+  titleOverride?: string | null;
+  // Plain day-count from the plan's start date — NOT split into a week
+  // count plus a weekday number. Splitting it that way is a trap: a
+  // standalone occurrence's absolute weekday (e.g. "Monday") only
+  // reconstructs the right date if the *new* plan's start date also happens
+  // to fall on a Sunday. A single day offset is immune to that by
+  // construction — it's relative to the start date, not to the calendar.
+  dayOffset: number;
+  spanWeeks?: number | null; // campaigns/series; null = a single day
+}
+
+export interface CadenceDefinition {
+  slots: CadenceSlotDef[];
+  standalone: CadenceStandaloneDef[];
+}
+
+export const cadenceTemplates = sqliteTable(
+  "cadence_templates",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    slug: text("slug").notNull().unique(),
+    name: text("name").notNull(),
+    summary: text("summary"),
+
+    visibility: text("visibility").notNull().default("public"), // public|team|private
+    status: text("status").notNull().default("published"), // draft|pending|published|rejected
+    ownerTeamId: text("owner_team_id").references(() => teams.id, { onDelete: "set null" }),
+    originPlanId: text("origin_plan_id").references(() => plans.id, { onDelete: "set null" }),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+
+    durationWeeks: integer("duration_weeks").notNull(),
+    discipline: text("discipline"),
+    teamSizeMin: integer("team_size_min"),
+    teamSizeMax: integer("team_size_max"),
+    workMode: text("work_mode"), // remote|hybrid|in-person
+    goals: text("goals", { mode: "json" }).$type<string[]>().default([]),
+
+    definition: text("definition", { mode: "json" }).$type<CadenceDefinition>().notNull(),
+
+    sourceName: text("source_name"),
+    sourceUrl: text("source_url"),
+    cloneCount: integer("clone_count").notNull().default(0),
+    featured: integer("featured", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
+  },
+  (t) => [index("cadence_templates_status_idx").on(t.status), index("cadence_templates_visibility_idx").on(t.visibility)],
+);
+
+/** One job is usually served by more than one cadence and vice versa — same shape as ritual_jobs (PLAN.md §1.1). */
+export const cadenceJobs = sqliteTable(
+  "cadence_jobs",
+  {
+    cadenceTemplateId: integer("cadence_template_id").notNull().references(() => cadenceTemplates.id, { onDelete: "cascade" }),
+    jobId: integer("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  },
+  (t) => [uniqueIndex("cadence_jobs_template_job_idx").on(t.cadenceTemplateId, t.jobId)],
+);
+
+export type CadenceTemplate = typeof cadenceTemplates.$inferSelect;
+export type NewCadenceTemplate = typeof cadenceTemplates.$inferInsert;
+export type CadenceJob = typeof cadenceJobs.$inferSelect;

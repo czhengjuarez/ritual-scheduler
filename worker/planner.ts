@@ -15,7 +15,7 @@ export const planner = new Hono<{ Bindings: Env; Variables: { session: Session }
 // id directly — tenancy is enforced at the data layer, not just at the /plans
 // entry point (PLAN.md §7).
 
-async function getOwnedPlan(db: Db, planId: string, teamId: string): Promise<Plan | null> {
+export async function getOwnedPlan(db: Db, planId: string, teamId: string): Promise<Plan | null> {
   const [plan] = await db.select().from(plans).where(and(eq(plans.id, planId), eq(plans.teamId, teamId))).limit(1);
   return plan ?? null;
 }
@@ -45,7 +45,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 /** Inserts only occurrences that don't already exist at (slotId, date) — never overwrites. */
-async function materializeSlotOccurrences(db: Db, plan: Plan, slot: Slot, rotation: RotationItem[], from: string, to: string) {
+export async function materializeSlotOccurrences(db: Db, plan: Plan, slot: Slot, rotation: RotationItem[], from: string, to: string) {
   if (from > to) return;
   // slot.freq is validated to one of Freq's members at every write site
   // (POST/PATCH below); the DB column itself is a plain string.

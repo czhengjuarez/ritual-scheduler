@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { CalendarDays } from "lucide-react";
+import { Link } from "react-router-dom";
+import { CalendarDays, Sparkles, ArrowRight } from "lucide-react";
 import { buttonClass, cardClass, inputClass, labelClass } from "@ops-forward/keel";
 import { useCreatePlan } from "../hooks/usePlanner";
 
@@ -10,6 +11,14 @@ function defaultEndDate(start: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * "Start from a cadence" is the primary onboarding path (PLAN.md §4, §8
+ * Phase 4) — a whole plan someone already built, not a blank form. This
+ * form still exists because building from scratch stays available, but it's
+ * the secondary path, led by a pointer to the gallery. The full "what are
+ * you trying to do?" job picker in front of the gallery is Phase 5 — for now
+ * the gallery's own job filter covers the same ground one click deeper.
+ */
 export function CreatePlanForm() {
   const today = new Date().toISOString().slice(0, 10);
   const [name, setName] = useState("");
@@ -18,36 +27,57 @@ export function CreatePlanForm() {
   const createPlan = useCreatePlan();
 
   return (
-    <div className={cardClass({ className: "max-w-lg mx-auto p-8" })}>
-      <CalendarDays size={20} strokeWidth={1.75} className="mb-3" style={{ color: "var(--of-fg-brand)" }} />
-      <h1 className="text-xl font-semibold mb-1">Start your plan</h1>
-      <p className="mb-6" style={{ color: "var(--of-fg-muted)" }}>
-        A plan can be a week, a quarter, or a year — rituals in it can be any span too (PLAN.md §1.2). Building
-        from a cadence template comes in Phase 4; for now, start from scratch.
-      </p>
+    <div className="max-w-lg mx-auto flex flex-col gap-4">
+      <Link to="/cadences" className={cardClass({ className: "p-6 flex items-center gap-4 hover:opacity-90" })}>
+        <Sparkles size={20} strokeWidth={1.75} style={{ color: "var(--of-fg-brand)" }} />
+        <div className="flex-1">
+          <h2 className="font-semibold mb-0.5">Start from a cadence</h2>
+          <p className="text-sm" style={{ color: "var(--of-fg-muted)" }}>
+            Clone a whole plan another team already built — the flagship four-week rotation, a one-week research
+            sprint, and more.
+          </p>
+        </div>
+        <ArrowRight size={20} strokeWidth={1.75} style={{ color: "var(--of-fg-subtle)" }} />
+      </Link>
 
-      <div className="flex flex-col gap-4">
-        <div>
-          <label className={labelClass()}>Plan name</label>
-          <input className={inputClass({ className: "w-full" })} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Design Team FY26" />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
+      <div className="flex items-center gap-3 my-1">
+        <div className="flex-1 h-px" style={{ background: "var(--of-border-line)" }} />
+        <span className="text-xs" style={{ color: "var(--of-fg-subtle)" }}>
+          or start from scratch
+        </span>
+        <div className="flex-1 h-px" style={{ background: "var(--of-border-line)" }} />
+      </div>
+
+      <div className={cardClass({ className: "p-8" })}>
+        <CalendarDays size={20} strokeWidth={1.75} className="mb-3" style={{ color: "var(--of-fg-brand)" }} />
+        <h1 className="text-xl font-semibold mb-1">Start your plan</h1>
+        <p className="mb-6" style={{ color: "var(--of-fg-muted)" }}>
+          A plan can be a week, a quarter, or a year — rituals in it can be any span too (PLAN.md §1.2).
+        </p>
+
+        <div className="flex flex-col gap-4">
           <div>
-            <label className={labelClass()}>Start date</label>
-            <input type="date" className={inputClass({ className: "w-full" })} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            <label className={labelClass()}>Plan name</label>
+            <input className={inputClass({ className: "w-full" })} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Design Team FY26" />
           </div>
-          <div>
-            <label className={labelClass()}>End date</label>
-            <input type="date" className={inputClass({ className: "w-full" })} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={labelClass()}>Start date</label>
+              <input type="date" className={inputClass({ className: "w-full" })} value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </div>
+            <div>
+              <label className={labelClass()}>End date</label>
+              <input type="date" className={inputClass({ className: "w-full" })} value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </div>
           </div>
+          <button
+            className={buttonClass({ variant: "primary" })}
+            disabled={!name.trim() || createPlan.isPending}
+            onClick={() => createPlan.mutate({ name: name.trim(), startDate, endDate })}
+          >
+            {createPlan.isPending ? "Creating…" : "Create plan"}
+          </button>
         </div>
-        <button
-          className={buttonClass({ variant: "primary" })}
-          disabled={!name.trim() || createPlan.isPending}
-          onClick={() => createPlan.mutate({ name: name.trim(), startDate, endDate })}
-        >
-          {createPlan.isPending ? "Creating…" : "Create plan"}
-        </button>
       </div>
     </div>
   );
