@@ -27,12 +27,15 @@ export function SuggestCadenceModal({
   workMode,
   horizonWeeks: initialHorizon,
   onClose,
+  onDone,
 }: {
   initialJobs: string[];
   teamSize?: string;
   workMode?: string;
   horizonWeeks?: number;
   onClose: () => void;
+  /** Called (in addition to navigating to /plan) once the suggested plan is actually created — see CreatePlanForm's onDone for why this matters when we're already on /plan. */
+  onDone?: () => void;
 }) {
   const [horizonWeeks, setHorizonWeeks] = useState(initialHorizon ?? 12);
   const [currentLoad, setCurrentLoad] = useState("");
@@ -72,7 +75,7 @@ export function SuggestCadenceModal({
     if (!result || !definition || !startDate) return;
     accept.mutate(
       { runId: result.runId, definition, startDate, durationWeeks: result.durationWeeks, name: name.trim() || undefined },
-      { onSuccess: () => navigate("/plan") },
+      { onSuccess: () => { onDone?.(); navigate("/plan"); } },
     );
   };
 

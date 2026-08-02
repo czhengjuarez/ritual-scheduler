@@ -22,7 +22,7 @@ const HORIZON_RANGES: Record<Horizon, { min?: number; max?: number }> = {
  * params — this isn't a separate ranking engine, it's a faster way to reach
  * the same filtered list the gallery's chips already produce.
  */
-export function JobPicker() {
+export function JobPicker({ onDone }: { onDone?: () => void }) {
   const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
   const [teamSize, setTeamSize] = useState("");
   const [workMode, setWorkMode] = useState("");
@@ -109,6 +109,7 @@ export function JobPicker() {
           workMode={workMode || undefined}
           horizonWeeks={HORIZON_RANGES[horizon].min ?? 12}
           onClose={() => setShowSuggest(false)}
+          onDone={onDone}
         />
       )}
     </div>

@@ -20,6 +20,16 @@ export async function getOwnedPlan(db: Db, planId: string, teamId: string): Prom
   return plan ?? null;
 }
 
+/**
+ * One active plan per team (PLAN.md §9 open question #2 — schema supports
+ * many, UI assumes one). Every path that creates a new plan calls this
+ * first so "start something new" always means "replace," never "silently
+ * pile up an invisible second plan nothing shows."
+ */
+export async function archiveActivePlans(db: Db, teamId: string): Promise<void> {
+  await db.update(plans).set({ status: "archived" }).where(and(eq(plans.teamId, teamId), eq(plans.status, "active")));
+}
+
 async function getOwnedSlot(db: Db, slotId: string, teamId: string): Promise<{ slot: Slot; plan: Plan } | null> {
   const [row] = await db.select({ slot: slots, plan: plans }).from(slots).innerJoin(plans, eq(plans.id, slots.planId)).where(and(eq(slots.id, slotId), eq(plans.teamId, teamId))).limit(1);
   return row ?? null;
@@ -131,6 +141,8 @@ planner.post("/plans", async (c) => {
   if (!body.name?.trim()) return c.json({ error: "name is required" }, 400);
   if (!body.startDate || !body.endDate) return c.json({ error: "startDate and endDate are required" }, 400);
   if (body.startDate > body.endDate) return c.json({ error: "startDate must be before endDate" }, 400);
+
+  await archiveActivePlans(db, session.teamId);
 
   const id = crypto.randomUUID();
   await db.insert(plans).values({

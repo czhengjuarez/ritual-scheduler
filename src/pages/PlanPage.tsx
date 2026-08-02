@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, Share2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, Share2, Sparkles } from "lucide-react";
 import { buttonClass, cx } from "@ops-forward/keel";
 import { usePlans, useOccurrences, useSlots } from "../hooks/usePlanner";
 import { useCategories } from "../hooks/useLibrary";
@@ -20,7 +20,10 @@ type View = "month" | "quarter" | "year";
 
 export function PlanPage() {
   const { data: plansData, isLoading: plansLoading } = usePlans();
-  const plan = plansData?.items[0];
+  // Only one plan is ever "active" at a time (PLAN.md §9 open question #2) —
+  // starting a new one archives whatever was active (see archiveActivePlans
+  // in worker/planner.ts), so this is never ambiguous between two live plans.
+  const plan = plansData?.items.find((p) => p.status === "active");
 
   const now = new Date();
   const [ref, setRef] = useState({ year: now.getFullYear(), month: now.getMonth() + 1 });
@@ -28,6 +31,7 @@ export function PlanPage() {
   const [showCycleEditor, setShowCycleEditor] = useState(false);
   const [showPublish, setShowPublish] = useState(false);
   const [selected, setSelected] = useState<OccurrenceDto | null>(null);
+  const [startingNew, setStartingNew] = useState(false);
 
   const monthsShown = view === "quarter" ? 3 : 1;
   const rangeStart = view === "year" ? plan?.startDate ?? isoDate(ref.year, ref.month, 1) : isoDate(ref.year, ref.month, 1);
@@ -57,7 +61,7 @@ export function PlanPage() {
   }, [occurrencesData]);
 
   if (plansLoading) return null;
-  if (!plan) return <CreatePlanForm />;
+  if (!plan || startingNew) return <CreatePlanForm onDone={plan ? () => setStartingNew(false) : undefined} />;
 
   const monthsToRender = Array.from({ length: monthsShown }, (_, i) => addMonths(ref.year, ref.month, i));
 
@@ -71,6 +75,9 @@ export function PlanPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button className={buttonClass({ variant: "ghost" })} onClick={() => setStartingNew(true)} title="Archives this plan and starts a new one from a job, a cadence, or scratch">
+            <Sparkles size={20} strokeWidth={1.75} className="!w-4 !h-4" style={{ color: "var(--of-fg-brand)" }} /> Start something new
+          </button>
           <button className={buttonClass({ variant: "secondary" })} onClick={() => setShowPublish(true)}>
             <Share2 size={20} strokeWidth={1.75} className="!w-4 !h-4" /> Publish
           </button>

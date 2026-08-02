@@ -18,7 +18,15 @@ function defaultEndDate(start: string): string {
  * available as the secondary path, and a plain "browse everything" escape
  * hatch stays one click away for anyone who'd rather skip the questions.
  */
-export function CreatePlanForm() {
+/**
+ * `onDone` fires both on cancel AND on a successful create — either way,
+ * the parent's "show the create flow instead of the calendar" flag needs
+ * to clear. Without it, creating a *replacement* plan while one already
+ * exists would leave this form stuck on screen forever: the new plan
+ * exists and is active, but the parent never finds out to stop overriding
+ * it (see PlanPage.tsx's `startingNew` state).
+ */
+export function CreatePlanForm({ onDone }: { onDone?: () => void }) {
   const today = new Date().toISOString().slice(0, 10);
   const [name, setName] = useState("");
   const [startDate, setStartDate] = useState(today);
@@ -27,7 +35,17 @@ export function CreatePlanForm() {
 
   return (
     <div className="max-w-lg mx-auto flex flex-col gap-4">
-      <JobPicker />
+      {onDone && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm" style={{ color: "var(--of-fg-muted)" }}>
+            Starting a new plan archives your current one — it isn't deleted, just no longer active.
+          </p>
+          <button onClick={onDone} className="text-sm shrink-0 ml-3" style={{ color: "var(--of-fg-brand)" }}>
+            Cancel
+          </button>
+        </div>
+      )}
+      <JobPicker onDone={onDone} />
 
       <Link to="/cadences" className="text-sm text-center" style={{ color: "var(--of-fg-muted)" }}>
         or just browse every cadence
@@ -66,7 +84,7 @@ export function CreatePlanForm() {
           <button
             className={buttonClass({ variant: "primary" })}
             disabled={!name.trim() || createPlan.isPending}
-            onClick={() => createPlan.mutate({ name: name.trim(), startDate, endDate })}
+            onClick={() => createPlan.mutate({ name: name.trim(), startDate, endDate }, { onSuccess: () => onDone?.() })}
           >
             {createPlan.isPending ? "Creating…" : "Create plan"}
           </button>
