@@ -12,10 +12,17 @@ import type { RitualDto } from "../hooks/useLibrary";
  * describes CycleBoard as drag-based; true drag interactions are deferred to
  * Phase 9 polish — this gets the same functional outcome without a DnD
  * dependency yet).
+ *
+ * Three ways out, all equally visible up front: pick something from the
+ * library below, leave the position unassigned, or create a brand-new
+ * ritual — the create path used to only appear once you'd typed a search
+ * query with no exact match, which read as "you must pick from the library"
+ * since the escape hatch was buried behind an unrelated action first.
  */
 export function RitualPickerModal({ onSelect, onClose }: { onSelect: (ritual: RitualDto | null) => void; onClose: () => void }) {
   const [q, setQ] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [title, setTitle] = useState("");
   const [categoryId, setCategoryId] = useState<number | "">("");
   const [load, setLoad] = useState<"light" | "medium" | "heavy">("medium");
   const [summary, setSummary] = useState("");
@@ -31,11 +38,14 @@ export function RitualPickerModal({ onSelect, onClose }: { onSelect: (ritual: Ri
   const createRitual = useCreateRitual();
   const autofill = useAutofill();
 
-  const exactMatch = data?.items.some((r) => r.title.toLowerCase() === q.trim().toLowerCase());
+  const openCreate = () => {
+    setTitle(q.trim());
+    setShowCreate(true);
+  };
 
   const runAutofill = () => {
     if (!notes.trim()) return;
-    autofill.mutate(`${q.trim()}\n${notes.trim()}`, {
+    autofill.mutate(`${title.trim()}\n${notes.trim()}`, {
       onSuccess: ({ draft }) => {
         setSummary(draft.summary ?? "");
         if (draft.load) setLoad(draft.load);
@@ -55,147 +65,158 @@ export function RitualPickerModal({ onSelect, onClose }: { onSelect: (ritual: Ri
   };
 
   const submitNew = () => {
-    if (!q.trim()) return;
+    if (!title.trim()) return;
     createRitual.mutate(
-      { title: q.trim(), summary: summary.trim() || undefined, categoryId: categoryId || undefined, load, jobSlugs: [...selectedJobs], renderedAt },
+      { title: title.trim(), summary: summary.trim() || undefined, categoryId: categoryId || undefined, load, jobSlugs: [...selectedJobs], renderedAt },
       { onSuccess: (result) => "item" in result && onSelect(result.item) },
     );
   };
 
   return (
     <Modal title="Choose a ritual" onClose={onClose} wide>
-      <div className="flex flex-col gap-3">
-        <div className="relative">
-          <Search size={20} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--of-fg-subtle)" }} />
-          <input
-            autoFocus
-            type="search"
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setShowCreate(false);
-            }}
-            placeholder="Search rituals…"
-            className={inputClass({ className: "pl-10 w-full" })}
-          />
-        </div>
+      {!showCreate ? (
+        <div className="flex flex-col gap-3">
+          <div className="relative">
+            <Search size={20} strokeWidth={1.75} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--of-fg-subtle)" }} />
+            <input
+              autoFocus
+              type="search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search rituals…"
+              className={inputClass({ className: "pl-10 w-full" })}
+            />
+          </div>
 
-        <button
-          onClick={() => onSelect(null)}
-          className="text-left px-3 py-2 rounded-md text-sm border"
-          style={{ borderColor: "var(--of-border-line)", color: "var(--of-fg-muted)" }}
-        >
-          Leave this position unassigned (theme only)
-        </button>
-
-        <div className="flex flex-col gap-1 max-h-96 overflow-y-auto">
-          {isLoading && <p style={{ color: "var(--of-fg-muted)" }}>Loading…</p>}
-          {data?.items.map((ritual) => (
+          <div className="flex gap-2">
             <button
-              key={ritual.id}
-              onClick={() => onSelect(ritual)}
-              className="flex items-center justify-between gap-3 text-left px-3 py-2 rounded-md hover:opacity-80"
-              style={{ background: "var(--of-bg-recessed)" }}
+              onClick={() => onSelect(null)}
+              className="flex-1 text-left px-3 py-2 rounded-md text-sm border"
+              style={{ borderColor: "var(--of-border-line)", color: "var(--of-fg-muted)" }}
             >
-              <div>
-                <div className="font-medium text-sm">{ritual.title}</div>
-                {ritual.summary && (
-                  <div className="text-xs" style={{ color: "var(--of-fg-muted)" }}>
-                    {ritual.summary}
-                  </div>
-                )}
-              </div>
-              <span className={badgeClass({ variant: ritual.load === "heavy" ? "red" : ritual.load === "light" ? "green" : "amber" })}>{ritual.load}</span>
+              Leave this position unassigned (theme only)
             </button>
-          ))}
-          {data && data.items.length === 0 && <p style={{ color: "var(--of-fg-muted)" }}>No matches.</p>}
-        </div>
+            <button
+              onClick={openCreate}
+              className="flex items-center gap-2 text-sm px-3 py-2 rounded-md shrink-0"
+              style={{ color: "var(--of-fg-brand)", background: "var(--of-bg-brand-subtle)" }}
+            >
+              <Plus size={20} strokeWidth={1.75} className="!w-4 !h-4" />
+              Create a new ritual
+            </button>
+          </div>
 
-        {q.trim() && !exactMatch && (
-          <div className="border-t pt-3" style={{ borderColor: "var(--of-border-line)" }}>
-            {!showCreate ? (
+          <div className="flex flex-col gap-1 max-h-96 overflow-y-auto">
+            {isLoading && <p style={{ color: "var(--of-fg-muted)" }}>Loading…</p>}
+            {data?.items.map((ritual) => (
               <button
-                onClick={() => setShowCreate(true)}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-md w-full"
-                style={{ color: "var(--of-fg-brand)", background: "var(--of-bg-brand-subtle)" }}
+                key={ritual.id}
+                onClick={() => onSelect(ritual)}
+                className="flex items-center justify-between gap-3 text-left px-3 py-2 rounded-md hover:opacity-80"
+                style={{ background: "var(--of-bg-recessed)" }}
               >
-                <Plus size={20} strokeWidth={1.75} className="!w-4 !h-4" />
-                Add "{q.trim()}" as a new ritual
+                <div>
+                  <div className="font-medium text-sm">{ritual.title}</div>
+                  {ritual.summary && (
+                    <div className="text-xs" style={{ color: "var(--of-fg-muted)" }}>
+                      {ritual.summary}
+                    </div>
+                  )}
+                </div>
+                <span className={badgeClass({ variant: ritual.load === "heavy" ? "red" : ritual.load === "light" ? "green" : "amber" })}>{ritual.load}</span>
               </button>
-            ) : (
-              <div className="flex flex-col gap-2 p-3 rounded-md" style={{ background: "var(--of-bg-recessed)" }}>
-                <p className="text-sm font-medium">New ritual: {q.trim()}</p>
-                <p className="text-xs" style={{ color: "var(--of-fg-muted)" }}>
-                  Lands in your team's library right away — no approval needed. Publishing it publicly is a separate,
-                  optional step from the Library page.
-                </p>
-
-                <div>
-                  <label className={labelClass()}>Paste notes, a URL, or a description (optional)</label>
-                  <textarea
-                    className={textareaClass({ className: "w-full" })}
-                    rows={2}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Paste anything about this ritual — AI drafts the fields below from it"
-                  />
-                  <button
-                    className={buttonClass({ variant: "secondary", size: "sm", className: "mt-1.5" })}
-                    onClick={runAutofill}
-                    disabled={!notes.trim() || autofill.isPending}
-                  >
-                    <Sparkles size={16} strokeWidth={1.75} style={{ color: "var(--of-fg-brand)" }} />
-                    {autofill.isPending ? "Drafting…" : "Autofill from this"}
-                  </button>
-                  {autofill.isError && <p className="text-xs mt-1" style={{ color: "var(--of-fg-danger)" }}>Couldn't draft from that — fill in the fields below instead.</p>}
-                </div>
-
-                <div>
-                  <label className={labelClass()}>Summary</label>
-                  <textarea className={textareaClass({ className: "w-full" })} rows={2} value={summary} onChange={(e) => setSummary(e.target.value)} />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className={labelClass()}>Category</label>
-                    <select className={selectClass({ className: "w-full" })} value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
-                      <option value="">None</option>
-                      {categoriesData?.items.map((cat) => (
-                        <option key={cat.id} value={cat.id}>
-                          {cat.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelClass()}>Load</label>
-                    <select className={selectClass({ className: "w-full" })} value={load} onChange={(e) => setLoad(e.target.value as typeof load)}>
-                      <option value="light">Light</option>
-                      <option value="medium">Medium</option>
-                      <option value="heavy">Heavy</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className={labelClass()}>Jobs this serves</label>
-                  <div className="flex flex-wrap gap-1.5 mt-1">
-                    {jobsData?.items.map((job) => (
-                      <Chip key={job.slug} active={selectedJobs.has(job.slug)} onClick={() => toggleJob(job.slug)}>
-                        {job.name}
-                      </Chip>
-                    ))}
-                  </div>
-                </div>
-
-                <button className={buttonClass({ variant: "primary", size: "sm" })} onClick={submitNew} disabled={createRitual.isPending}>
-                  {createRitual.isPending ? "Creating…" : "Create & use it"}
-                </button>
-              </div>
+            ))}
+            {data && data.items.length === 0 && (
+              <p style={{ color: "var(--of-fg-muted)" }}>No matches in your library — create a new one above.</p>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs" style={{ color: "var(--of-fg-muted)" }}>
+            Lands in your team's library right away — no approval needed. Publishing it publicly is a separate,
+            optional step from the Library page.
+          </p>
+
+          <div>
+            <label className={labelClass()}>Title</label>
+            <input
+              autoFocus
+              className={inputClass({ className: "w-full" })}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Friday Demo Day"
+            />
+          </div>
+
+          <div>
+            <label className={labelClass()}>Paste notes, a URL, or a description (optional)</label>
+            <textarea
+              className={textareaClass({ className: "w-full" })}
+              rows={2}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Paste anything about this ritual — AI drafts the fields below from it"
+            />
+            <button
+              className={buttonClass({ variant: "secondary", size: "sm", className: "mt-1.5" })}
+              onClick={runAutofill}
+              disabled={!notes.trim() || autofill.isPending}
+            >
+              <Sparkles size={16} strokeWidth={1.75} style={{ color: "var(--of-fg-brand)" }} />
+              {autofill.isPending ? "Drafting…" : "Autofill from this"}
+            </button>
+            {autofill.isError && <p className="text-xs mt-1" style={{ color: "var(--of-fg-danger)" }}>Couldn't draft from that — fill in the fields below instead.</p>}
+          </div>
+
+          <div>
+            <label className={labelClass()}>Summary</label>
+            <textarea className={textareaClass({ className: "w-full" })} rows={2} value={summary} onChange={(e) => setSummary(e.target.value)} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className={labelClass()}>Category</label>
+              <select className={selectClass({ className: "w-full" })} value={categoryId} onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : "")}>
+                <option value="">None</option>
+                {categoriesData?.items.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass()}>Load</label>
+              <select className={selectClass({ className: "w-full" })} value={load} onChange={(e) => setLoad(e.target.value as typeof load)}>
+                <option value="light">Light</option>
+                <option value="medium">Medium</option>
+                <option value="heavy">Heavy</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className={labelClass()}>Jobs this serves</label>
+            <div className="flex flex-wrap gap-1.5 mt-1">
+              {jobsData?.items.map((job) => (
+                <Chip key={job.slug} active={selectedJobs.has(job.slug)} onClick={() => toggleJob(job.slug)}>
+                  {job.name}
+                </Chip>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button className={buttonClass({ variant: "secondary" })} onClick={() => setShowCreate(false)}>
+              Back
+            </button>
+            <button className={buttonClass({ variant: "primary", className: "flex-1" })} onClick={submitNew} disabled={!title.trim() || createRitual.isPending}>
+              {createRitual.isPending ? "Creating…" : "Create & use it"}
+            </button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }

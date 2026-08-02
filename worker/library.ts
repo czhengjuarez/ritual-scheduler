@@ -197,6 +197,25 @@ library.post("/rituals", async (c) => {
   return c.json({ item }, 201);
 });
 
+/**
+ * Deletes a team-owned ritual — never a public library ritual, even for the
+ * team that happens to own it (public ones don't have an owner). This is the
+ * cleanup path for throwaway rituals created via Remix or the picker's
+ * inline "create a new ritual" form during testing.
+ */
+library.delete("/rituals/:id", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const id = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(id)) return c.json({ error: "invalid id" }, 400);
+
+  const [ritual] = await db.select().from(rituals).where(and(eq(rituals.id, id), eq(rituals.ownerTeamId, session.teamId))).limit(1);
+  if (!ritual) return c.json({ error: "not found" }, 404);
+
+  await db.delete(rituals).where(eq(rituals.id, id));
+  return c.json({ success: true });
+});
+
 /** Requests public review for a ritual this team already owns — the ritual itself enters the admin queue, same as a cadence publish. */
 library.post("/rituals/:id/request-public", async (c) => {
   const session = c.get("session");

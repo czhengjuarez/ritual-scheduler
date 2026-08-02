@@ -18,10 +18,12 @@ export function Chip({
     <button
       type="button"
       onClick={onClick}
-      className={cx(
-        "px-3 py-1.5 rounded-full text-sm font-medium border transition-colors",
-      )}
+      className={cx("font-medium border transition-colors")}
       style={{
+        padding: "6px 12px",
+        borderRadius: "var(--of-radius-pill)",
+        fontSize: "var(--of-text-sm)",
+        lineHeight: 1,
         borderColor: active ? "var(--of-border-brand)" : "var(--of-border-line)",
         background: active ? "var(--of-bg-brand-subtle)" : "transparent",
         color: active ? "var(--of-fg-brand)" : "var(--of-fg-muted)",

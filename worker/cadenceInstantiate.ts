@@ -2,7 +2,7 @@ import { and, asc, eq, or } from "drizzle-orm";
 import type { Db } from "./db";
 import { occurrences, plans, rituals, rotationItems, slots, type CadenceDefinition, type Plan, type Slot } from "../db/schema";
 import { addDaysISO, firstMatchingDate } from "./schedule";
-import { materializeSlotOccurrences, archiveActivePlans } from "./planner";
+import { materializeSlotOccurrences } from "./planner";
 
 /** A ritual slug only resolves if the caller's team can actually see it — public, or owned by them. */
 async function resolveRitualId(db: Db, slugOrNull: string | null, teamId: string): Promise<number | null> {
@@ -35,8 +35,6 @@ export interface InstantiatePlanArgs {
  * same instantiation.
  */
 export async function instantiatePlanFromDefinition(db: Db, args: InstantiatePlanArgs): Promise<Plan> {
-  await archiveActivePlans(db, args.teamId);
-
   const endDate = addDaysISO(args.startDate, args.durationWeeks * 7 - 1);
   const planId = crypto.randomUUID();
 
@@ -64,6 +62,7 @@ export async function instantiatePlanFromDefinition(db: Db, args: InstantiatePla
       name: slotDef.name,
       color: slotDef.color ?? null,
       freq: slotDef.freq,
+      interval: slotDef.interval ?? 1,
       byweekday: slotDef.byweekday,
       nth: slotDef.nth ?? null,
       startTime: slotDef.startTime ?? null,

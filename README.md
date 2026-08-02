@@ -210,11 +210,21 @@ team session or the eventual Google sign-in. See the Phase 5 section above.
 
 `/plan` is the home screen (PLAN.md §1): create a plan, add a slot with a
 rotation of rituals, view it as a month or quarter calendar, click an
-occurrence to edit facilitator/notes/status or log a reflection. Assigning a
-ritual to a rotation position and to the calendar is done via a **picker
-(search + click)**, not drag-and-drop — same functional outcome as PLAN.md
-§3's `CycleBoard` description, without a DnD dependency for this first pass.
-True drag interactions are a natural Phase 9 polish item.
+occurrence to edit facilitator/notes/status/date/time/duration or log a
+reflection. Assigning a ritual to a rotation position is **typing directly
+into a free-text combobox** (`RitualComboInput`) — the library is a live
+suggestion dropdown underneath, not a gate you must go through; a library
+icon still opens the full search/filter/create picker as an opt-in escape
+hatch. Not drag-and-drop — same functional outcome as PLAN.md §3's
+`CycleBoard` description, without a DnD dependency. True drag interactions
+are a natural Phase 9 polish item.
+
+Plans and slots are both fully CRUD-able, not just create-once: "Manage
+plans" renames, edits dates, restores an archived plan, and deletes; "Manage
+slots" renames a recurring series, changes its cadence (a Weekly/Every N
+weeks/Monthly/Quarterly/Annual preset, or a raw custom interval — see
+`slots.interval` and `src/lib/cadence.ts`), edits its rotation, or deletes
+the whole series.
 
 Campaigns and multi-week rituals (a research week, a year-long mentorship)
 render as a separate banner list above the month/quarter calendar rather
@@ -240,10 +250,14 @@ are you trying to do?" job picker in front of the gallery is Phase 5; for
 now the gallery's own job-filter chips cover the same ground one click
 deeper.
 
-One known gap, already documented as an open question rather than a Phase 4
-regression: `usePlans()` always shows the team's first plan. Cloning a
-second cadence when a plan already exists creates a plan the UI doesn't
-switch to. Multi-plan support is explicitly deferred to Phase 7 (PLAN.md §9).
+**Multi-plan per team, resolved 2026-08-02** (was an open question, PLAN.md
+§9): several plans coexist and none of them is exclusively "the" active
+one. Creating a plan (from scratch, a cadence clone, or an AI suggestion)
+never touches other plans anymore — `PlanPage` remembers whichever plan you
+last picked, via a switcher in the header once more than one exists, and
+otherwise falls back to the most recently created one. `plans.status`
+(`draft`/`active`/`archived`) is just a label now, editable from "Manage
+plans" (including restoring an archived plan), not an exclusivity flag.
 
 ## Project structure
 

@@ -42,6 +42,34 @@ console.log("\nBiweekly");
   check("positions alternate 0,1,0,1...", eq(dates.slice(0, 4).map(d => d.position), [0, 1, 0, 1]));
 }
 
+console.log("\nWeekly with a custom interval (the 'every N weeks' generalization)");
+{
+  const slot = { anchorDate: "2026-01-01", freq: "weekly", interval: 3, cycleLength: 1 };
+  const dates = generateSlotDates(slot, "2026-01-01", "2026-06-01");
+  check("first date is the anchor itself", dates[0].date === "2026-01-01");
+  check("steps by 21 days (3 weeks)", dates.every((d, i) => i === 0 || daysBetweenISO(dates[i - 1].date, d.date) === 21));
+  check("interval undefined behaves like interval 1", eq(
+    generateSlotDates({ anchorDate: "2026-01-01", freq: "weekly", cycleLength: 1 }, "2026-01-01", "2026-02-01").map(d => d.date),
+    generateSlotDates({ anchorDate: "2026-01-01", freq: "weekly", interval: 1, cycleLength: 1 }, "2026-01-01", "2026-02-01").map(d => d.date),
+  ));
+}
+
+console.log("\nMonthly with a custom interval (quarterly = interval 3, annual = interval 12)");
+{
+  // 2026-01-08 is the 2nd Thursday of January 2026.
+  const quarterly = { anchorDate: "2026-01-08", freq: "monthly", interval: 3, cycleLength: 1 };
+  const dates = generateSlotDates(quarterly, "2026-01-01", "2026-12-31");
+  check("first is the anchor", dates[0].date === "2026-01-08");
+  check("4 occurrences a year (every 3 months)", dates.length === 4, `got ${dates.length}`);
+  check("every occurrence is the 2nd Thursday of its month", dates.every(d => weekdayOf(d.date) === 4));
+  check("lands in Jan, Apr, Jul, Oct", eq(dates.map(d => d.date.slice(5, 7)), ["01", "04", "07", "10"]));
+
+  const annual = { anchorDate: "2026-01-08", freq: "monthly", interval: 12, cycleLength: 1 };
+  const annualDates = generateSlotDates(annual, "2026-01-01", "2027-06-30");
+  check("annual: exactly one occurrence per year", annualDates.length === 2, `got ${annualDates.length}`);
+  check("annual: same month/day-of-week pattern each year", eq(annualDates.map(d => d.date.slice(0, 4)), ["2026", "2027"]));
+}
+
 console.log("\nMonthly — nth weekday derived from anchor, not client-supplied");
 {
   // 2026-01-08 is the 2nd Thursday of January 2026.

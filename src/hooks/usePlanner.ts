@@ -20,6 +20,7 @@ export interface RotationItemDto {
   position: number;
   ritualId: number | null;
   label: string | null;
+  ritual: RitualDto | null;
 }
 
 export interface SlotDto {
@@ -28,6 +29,7 @@ export interface SlotDto {
   name: string;
   color: string | null;
   freq: "weekly" | "biweekly" | "monthly";
+  interval: number;
   byweekday: number;
   startTime: string | null;
   durationMin: number | null;
@@ -94,6 +96,24 @@ export function useCreatePlan() {
   });
 }
 
+export function useUpdatePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name?: string; startDate?: string; endDate?: string; status?: PlanDto["status"] }) =>
+      sendJSON<{ item: PlanDto }>(`/api/plans/${id}`, "PATCH", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["plans"] }),
+  });
+}
+
+/** A real delete (cascades slots/occurrences/reflections) — plans no longer auto-archive on create, this is the only way one goes away. */
+export function useDeletePlan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (planId: string) => sendJSON<{ success: true }>(`/api/plans/${planId}`, "DELETE"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["plans"] }),
+  });
+}
+
 export function useSlots(planId: string | undefined) {
   return useQuery({
     queryKey: ["slots", planId],
@@ -109,9 +129,10 @@ export function useCreateSlot(planId: string) {
       name: string;
       anchorDate: string;
       freq: string;
+      interval?: number;
       durationMin?: number;
       startTime?: string;
-      rotation: { position: number; ritualId: number | null }[];
+      rotation: { position: number; ritualId: number | null; label?: string | null }[];
     }) => sendJSON<{ item: SlotDto }>(`/api/plans/${planId}/slots`, "POST", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["slots", planId] });
@@ -124,8 +145,19 @@ export function useCreateSlot(planId: string) {
 export function useUpdateSlot(planId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ slotId, ...body }: { slotId: string; rotation?: { position: number; ritualId: number | null }[]; name?: string }) =>
-      sendJSON<{ item: SlotDto }>(`/api/slots/${slotId}`, "PATCH", body),
+    mutationFn: ({
+      slotId,
+      ...body
+    }: {
+      slotId: string;
+      rotation?: { position: number; ritualId: number | null; label?: string | null }[];
+      name?: string;
+      freq?: string;
+      interval?: number;
+      anchorDate?: string;
+      durationMin?: number | null;
+      startTime?: string | null;
+    }) => sendJSON<{ item: SlotDto }>(`/api/slots/${slotId}`, "PATCH", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["slots", planId] });
       qc.invalidateQueries({ queryKey: ["occurrences", planId] });
@@ -169,7 +201,7 @@ export function useCreateOccurrence(planId: string) {
 export function useUpdateOccurrence(planId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string } & Partial<Pick<OccurrenceDto, "facilitator" | "guestName" | "notes" | "status" | "ritualId">>) =>
+    mutationFn: ({ id, ...body }: { id: string } & Partial<Pick<OccurrenceDto, "facilitator" | "guestName" | "notes" | "status" | "ritualId" | "titleOverride">>) =>
       sendJSON<{ item: OccurrenceDto }>(`/api/occurrences/${id}`, "PATCH", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["occurrences", planId] });

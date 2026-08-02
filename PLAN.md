@@ -121,6 +121,17 @@ fully useful to someone who has never opened the audit.
 
 The one thing to get right now for the merge: **a shared identity shape** (§7).
 
+**The planned AI-native front door's `audit` destination (§5.2) is this
+cross-link, made concrete**, decided 2026-08-02: a plain external `<a>` to
+TeamRitualAudit — no shared session, no cross-app API calls, no shared
+personalization store. This is intentionally cheap now and cheap to upgrade
+later specifically because both apps already key `users` by `google_sub`
+(§7) — a future merge becomes a join across that column, not a data
+migration. Do not build deeper integration (a shared learning/personalization
+store, cross-app reads of audit scores, etc.) before the library-first merge
+above actually happens — that would mean integrating against a data/session
+model that's still planned to change.
+
 ---
 
 ## 2. Stack decision
@@ -420,11 +431,27 @@ Four views over one plan:
   no learning in it.
 - **Quarter** — 13 weeks, more detail, drag to move.
 - **Month** — conventional calendar for the near term.
-- **Cycle editor** — the rotation board. Drag rituals into positions 1..N; live
-  preview of the next 8 dates.
+- **Cycle editor** — the rotation board. Each position 1..N is a free-text
+  box (`RitualComboInput`, revised 2026-08-02): typing and submitting
+  schedules exactly what you typed, no library entry required; a live
+  suggestion dropdown underneath offers matching library rituals as
+  one-click shortcuts, and a library icon still opens the full
+  search/filter/create picker as an opt-in escape hatch. The library is a
+  suggestion, never a gate — the inverse of the original "must pick from
+  the library" flow.
+
+Slots (the recurring rotation itself, not just its occurrences) are fully
+CRUD-able via "Manage slots": rename, change cadence, edit the rotation, or
+delete the whole series — not just create new ones. Cadence is a preset
+picker (Weekly, Every 2/3/4 weeks, Monthly, Quarterly, Annual, or a raw
+"every N weeks/months" Custom option) backed by a `slots.interval` column;
+quarterly and annual are just monthly with `interval` 3 or 12, not separate
+frequencies (`worker/schedule.ts`'s `generateSlotDates` steps by `interval`
+weeks/months instead of a fixed 7/30-ish day gap).
 
 Occurrence drawer: swap ritual, assign facilitator/owner, add a guest, extend a
-span, skip an instance, attach notes, log a reflection afterwards.
+span, skip an instance, reschedule its date/time/duration, attach notes, log a
+reflection afterwards, or remove it from the plan entirely.
 
 Scheduling intelligence (rules, not AI — cheap and instant): heavy-load
 clustering, `min_gap_weeks` violations, `avoid_near` conflicts, prep-lead
@@ -433,10 +460,61 @@ load.
 
 ### 5.2 Onboarding — JTBD first
 
-"What are you trying to do?" → pick one or more jobs, plus team size, work mode,
-and horizon (a week, a quarter, a year) → ranked cadence templates → preview as
-a mini year-grid → clone with a start date. Building from scratch stays
-available but is the secondary path.
+**The front door is its own page (`/`, HomePage.tsx), reached by clicking
+"Ritual Builder" in the header.** It shows only the one-sentence app
+description and a freeform intent box — no job chips. This went through
+several same-day revisions on 2026-08-02: chip picker only → intent box
+added *alongside* the chips as a permanent fixture of `/plan` → chips
+dropped, front door moved to its own page (one-shot classify-and-route) →
+**current form: a real conversational builder, not a classifier**. The
+one-shot version just linked off to a filtered `/cadences` gallery when it
+detected a "design a cadence" ask, which wasn't actually building anything
+for you — it was still a hand-off.
+
+`IntentBox.tsx` now holds a short back-and-forth against `POST
+/api/intent/converse` (same tool-calling infra as cadence
+suggestion/remix/autofill, §5.6), sending the whole transcript each turn.
+The model calls a single `respond` tool with an `action`:
+- **`ask`** — still missing a job and/or a team size (the two required
+  inputs; work mode and plan length are optional, length defaults to 12
+  weeks). The model asks for exactly one missing thing at a time and the
+  reply renders as a follow-up question; the frontend just waits for the
+  next message.
+- **`propose`** — has enough to design one. The server runs the *same*
+  `generateCadenceSuggestion` pipeline "Design my quarter" uses (factored
+  out of `/api/suggest-cadence` so both share one implementation), and
+  returns a `SuggestCadenceResult` embedded in the response. `IntentBox`
+  renders a compact review (slots/rotation/standalone, real ritual titles)
+  plus plan name/start date fields and a **"Build it on my calendar"**
+  button, which calls the existing `useAcceptSuggestion` accept endpoint —
+  the exact same generate → review → accept pipeline as the modal, just
+  reached by talking instead of filling in a form.
+- **`route`** — the ask isn't about building a cadence at all:
+  `plan` (blank slate, `/plan?new=1`), `ritual` (`/library`), `calendar`
+  (back to the active plan, or a fallback note if there's none), `audit`
+  (external link to TeamRitualAudit, `src/config/suite.ts`, §1.5). There is
+  no `gallery` destination anymore — that case now goes through
+  ask/propose instead of linking to the gallery.
+
+Two defensive server-side downgrades in `worker/ai.ts` (never trust the
+model's adherence to its own schema, same discipline as everywhere else in
+that file): `propose` without a real job+teamSize gets forced back to
+`ask`, and `route` without a valid `destination` also gets forced back to
+`ask` — the model does sometimes pick `route` without filling in
+`destination`, which would otherwise reach the frontend's `switch` and
+silently do nothing.
+
+`/plan` itself is still just the planner: "Start a plan" is the default
+body when there's no active plan (a single card — plan name/dates — plus a
+second "Or let AI design one for you" card seeded with job chips/team
+size/work mode that opens the same `SuggestCadenceModal`), and the calendar
+otherwise. Neither embeds the intent box; that's Home's job alone.
+`src/lib/cadenceFilters.ts` (the old classify→gallery param mapping) was
+deleted along with the `gallery` destination — nothing else used it.
+
+**Personalization (e.g. "this user always goes straight to the calendar" or
+"always audits first") is still deferred until there's real usage data to
+learn from.**
 
 ### 5.3 Cadences — browse, clone, publish
 
@@ -707,7 +785,8 @@ cadences and rituals, admin gate, CRUD, source-verification view, spam controls.
 **Phase 6 — AI**
 Vectorize + embedding backfill, semantic search, job-driven cadence suggestion
 with accept/edit diff, balance & spacing analysis, remix, autofill. Optional
-audit-score input.
+audit-score input. **Planned next:** intent-classification front door (§5.2)
+routing freeform text to a plan/gallery/ritual/calendar/audit destination.
 
 **Phase 7 — Auth on & teams**
 Enable Google Sign-In, anonymous-team claim, memberships and roles, team
@@ -727,15 +806,12 @@ performance on a 52-week × N-lane grid.
 
 1. **Plan granularity default** — week-level with optional times (current plan),
    or ask for times up front? Revisit after Phase 2.
-2. **Multi-plan per team** — one active plan, or several? Schema supports many;
-   UI assumes one active. Decide in Phase 7.
-3. **Stream cost/scope** — confirm before building in Phase 8.
-4. **Custom domain — now or later?** Needed for suite-wide SSO (§7.4) *and* for
+2. **Stream cost/scope** — confirm before building in Phase 8.
+3. **Custom domain — now or later?** Needed for suite-wide SSO (§7.4) *and* for
    Cloudflare Access on admin. Recommend acquiring before Phase 7.
-5. **Where does the library-depth project live?** Its own repo/service, or a
+4. **Where does the library-depth project live?** Its own repo/service, or a
    content pipeline that seeds this D1? Affects whether rituals need a separate
    schema.
-
 *Resolved:*
 - Primary shareable unit is a **whole cadence**, not an individual ritual (§4).
 - **Library-depth project comes before the merge**; cross-link only for now (§1.5).
@@ -744,6 +820,28 @@ performance on a 52-week × N-lane grid.
 - **JTBD is the entry point** (§1.1).
 - **One shared auth module + `google_sub` as the merge key**, written here,
   backported to Audit (§7).
+- **Front door becomes AI-native, additively, and always renders** — one
+  freeform intent box above the existing JTBD chips, classified by a Workers
+  AI call into a plan/gallery/ritual/calendar/audit destination; it stays on
+  screen even once an active plan exists (revised 2026-08-02 — disappearing
+  once there's data left a returning user with no orientation). The chip
+  picker remains the deterministic fallback, and personalization is
+  deferred until there's real usage data (§5.2).
+- **Audit stays a plain external link** until the real merge — no cross-app
+  API calls or shared personalization store before then (§1.5).
+- **Multi-plan per team: several plans coexist, none of them exclusive**
+  (decided 2026-08-02, ahead of the Phase 7 timeline above — a real user
+  hit this managing more than one team's calendar). Creating a plan no
+  longer archives whatever else exists (`archiveActivePlans` removed from
+  both `POST /plans` and `instantiatePlanFromDefinition`); `PlanPage`
+  remembers whichever plan you last picked and otherwise falls back to the
+  most recently created one. `status` (`draft`/`active`/`archived`) is now
+  a plain user-controlled label, not an exclusivity mechanism — "Manage
+  plans" can rename, edit dates, restore an archived plan back to active
+  (a `PATCH .../status` round trip; there's no archive action in the UI
+  yet, only restore for plans archived before this change or via the API),
+  and delete any plan, plus switch which one the calendar is showing
+  (§5.1).
 
 ---
 

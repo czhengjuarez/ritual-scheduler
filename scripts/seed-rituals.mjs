@@ -642,6 +642,16 @@ const RITUALS = [
     antiPatterns: ["Written once and never updated as roles change"],
     tags: ["culture", "onboarding"],
   }),
+  r("manager-1-1", "Manager 1:1", "people-culture", [["build-cohesion", 2], ["get-aligned", 2], ["learn-faster", 1]], {
+    summary: "A regular, private conversation between a manager and their direct report.",
+    purpose: "Give every direct report dedicated time with their manager — not just group updates.",
+    defaultCadence: "weekly", durationMin: 30, prepLeadDays: 0, load: "light", sizeMin: 2, sizeMax: 2,
+    facilitatorRole: "Direct report (sets the agenda)",
+    agenda: [{ title: "Whatever's on the report's mind first", minutes: 10 }, { title: "Status and blockers", minutes: 10 }, { title: "Feedback, both directions", minutes: 10 }],
+    outputs: ["Blockers surfaced and unblocked before they compound", "Feedback exchanged in both directions"],
+    antiPatterns: ["Manager does all the talking", "Turns into a pure status update, crowding out anything personal", "First meeting cancelled when the calendar gets tight"],
+    tags: ["1:1", "management"],
+  }),
   r("random-coffee", "Random Coffee Pairing", "people-culture", [["build-cohesion", 3]], {
     summary: "Randomly paired 1:1 chats with no work agenda.",
     purpose: "Build relationships across the team that wouldn't happen otherwise.",

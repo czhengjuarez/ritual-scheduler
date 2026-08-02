@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { and, asc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { getDb, type Db } from "./db";
-import { occurrences, plans, reflections, rituals, rotationItems, slots, type Plan, type Slot, type RotationItem } from "../db/schema";
+import { occurrences, plans, reflections, rituals, rotationItems, slots, type Plan, type Slot, type RotationItem, type Ritual } from "../db/schema";
 import { deriveByweekday, generateSlotDates, todayISO, weekBucket, daysBetweenISO, addDaysISO, type Freq } from "./schedule";
 import { buildSingleEventIcs } from "./ics";
 import type { Env } from "./index";
@@ -18,16 +18,6 @@ export const planner = new Hono<{ Bindings: Env; Variables: { session: Session }
 export async function getOwnedPlan(db: Db, planId: string, teamId: string): Promise<Plan | null> {
   const [plan] = await db.select().from(plans).where(and(eq(plans.id, planId), eq(plans.teamId, teamId))).limit(1);
   return plan ?? null;
-}
-
-/**
- * One active plan per team (PLAN.md §9 open question #2 — schema supports
- * many, UI assumes one). Every path that creates a new plan calls this
- * first so "start something new" always means "replace," never "silently
- * pile up an invisible second plan nothing shows."
- */
-export async function archiveActivePlans(db: Db, teamId: string): Promise<void> {
-  await db.update(plans).set({ status: "archived" }).where(and(eq(plans.teamId, teamId), eq(plans.status, "active")));
 }
 
 async function getOwnedSlot(db: Db, slotId: string, teamId: string): Promise<{ slot: Slot; plan: Plan } | null> {
@@ -133,6 +123,22 @@ planner.get("/plans", async (c) => {
   return c.json({ items });
 });
 
+/**
+ * A real delete, unlike "Start something new" which only archives — this is
+ * the escape hatch for clearing out test/throwaway plans. D1 enforces the
+ * schema's onDelete:cascade FKs, so this also removes the plan's slots,
+ * rotation items, occurrences, and reflections in one go.
+ */
+planner.delete("/plans/:planId", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const plan = await getOwnedPlan(db, c.req.param("planId"), session.teamId);
+  if (!plan) return c.json({ error: "not found" }, 404);
+
+  await db.delete(plans).where(eq(plans.id, plan.id));
+  return c.json({ success: true });
+});
+
 planner.post("/plans", async (c) => {
   const session = c.get("session");
   const db = getDb(c.env.DB);
@@ -141,8 +147,6 @@ planner.post("/plans", async (c) => {
   if (!body.name?.trim()) return c.json({ error: "name is required" }, 400);
   if (!body.startDate || !body.endDate) return c.json({ error: "startDate and endDate are required" }, 400);
   if (body.startDate > body.endDate) return c.json({ error: "startDate must be before endDate" }, 400);
-
-  await archiveActivePlans(db, session.teamId);
 
   const id = crypto.randomUUID();
   await db.insert(plans).values({
@@ -179,10 +183,17 @@ planner.patch("/plans/:planId", async (c) => {
   const plan = await getOwnedPlan(db, c.req.param("planId"), session.teamId);
   if (!plan) return c.json({ error: "not found" }, 404);
 
-  const body = await c.req.json<{ name?: string; status?: string }>().catch(() => ({}) as Record<string, never>);
+  const body = await c.req.json<{ name?: string; status?: string; startDate?: string; endDate?: string }>().catch(() => ({}) as Record<string, never>);
   const patch: Partial<Plan> = {};
   if (body.name?.trim()) patch.name = body.name.trim();
   if (body.status && ["draft", "active", "archived"].includes(body.status)) patch.status = body.status;
+
+  const nextStart = body.startDate ?? plan.startDate;
+  const nextEnd = body.endDate ?? plan.endDate;
+  if (nextStart > nextEnd) return c.json({ error: "startDate must be before endDate" }, 400);
+  if (body.startDate) patch.startDate = body.startDate;
+  if (body.endDate) patch.endDate = body.endDate;
+
   if (Object.keys(patch).length) await db.update(plans).set(patch).where(eq(plans.id, plan.id));
 
   const [updated] = await db.select().from(plans).where(eq(plans.id, plan.id)).limit(1);
@@ -222,11 +233,19 @@ planner.get("/plans/:planId/slots", async (c) => {
   if (!plan) return c.json({ error: "not found" }, 404);
 
   const slotRows = await db.select().from(slots).where(eq(slots.planId, plan.id)).orderBy(asc(slots.createdAt));
+  // Left-joined so an edit form can show each position's current ritual
+  // title without a second round trip (same shallow-join style as
+  // GET /plans/:planId/occurrences below).
   const rotationRows = slotRows.length
-    ? await db.select().from(rotationItems).where(inArray(rotationItems.slotId, slotRows.map((s) => s.id))).orderBy(asc(rotationItems.position))
+    ? await db
+        .select({ item: rotationItems, ritual: rituals })
+        .from(rotationItems)
+        .leftJoin(rituals, eq(rituals.id, rotationItems.ritualId))
+        .where(inArray(rotationItems.slotId, slotRows.map((s) => s.id)))
+        .orderBy(asc(rotationItems.position))
     : [];
-  const bySlot = new Map<string, RotationItem[]>();
-  for (const r of rotationRows) bySlot.set(r.slotId, [...(bySlot.get(r.slotId) ?? []), r]);
+  const bySlot = new Map<string, (RotationItem & { ritual: Ritual | null })[]>();
+  for (const { item, ritual } of rotationRows) bySlot.set(item.slotId, [...(bySlot.get(item.slotId) ?? []), { ...item, ritual }]);
 
   return c.json({ items: slotRows.map((s) => ({ ...s, rotation: bySlot.get(s.id) ?? [] })) });
 });
@@ -242,6 +261,7 @@ planner.post("/plans/:planId/slots", async (c) => {
       name?: string;
       color?: string;
       freq?: string;
+      interval?: number;
       anchorDate?: string;
       durationMin?: number;
       startTime?: string;
@@ -254,6 +274,7 @@ planner.post("/plans/:planId/slots", async (c) => {
   if (!body.name?.trim()) return c.json({ error: "name is required" }, 400);
   if (!body.anchorDate) return c.json({ error: "anchorDate is required" }, 400);
   const freq = ALLOWED_FREQ.has(body.freq as Freq) ? (body.freq as Freq) : "weekly";
+  const interval = Number.isInteger(body.interval) && body.interval! >= 1 ? body.interval! : 1;
   const rotationInput = body.rotation?.length ? body.rotation : [{ position: 0, ritualId: null }];
 
   const slotId = crypto.randomUUID();
@@ -263,6 +284,7 @@ planner.post("/plans/:planId/slots", async (c) => {
     name: body.name.trim(),
     color: body.color ?? null,
     freq,
+    interval,
     byweekday: deriveByweekday(body.anchorDate),
     nth: null,
     startTime: body.startTime ?? null,
@@ -300,6 +322,8 @@ planner.patch("/slots/:slotId", async (c) => {
     .req.json<{
       name?: string;
       color?: string;
+      freq?: string;
+      interval?: number;
       anchorDate?: string;
       durationMin?: number | null;
       startTime?: string | null;
@@ -313,6 +337,8 @@ planner.patch("/slots/:slotId", async (c) => {
     ...slot,
     name: body.name?.trim() || slot.name,
     color: body.color !== undefined ? body.color : slot.color,
+    freq: ALLOWED_FREQ.has(body.freq as Freq) ? (body.freq as Freq) : slot.freq,
+    interval: Number.isInteger(body.interval) && body.interval! >= 1 ? body.interval! : slot.interval,
     anchorDate: body.anchorDate ?? slot.anchorDate,
     byweekday: body.anchorDate ? deriveByweekday(body.anchorDate) : slot.byweekday,
     durationMin: body.durationMin !== undefined ? body.durationMin : slot.durationMin,
@@ -327,6 +353,8 @@ planner.patch("/slots/:slotId", async (c) => {
     .set({
       name: updated.name,
       color: updated.color,
+      freq: updated.freq,
+      interval: updated.interval,
       anchorDate: updated.anchorDate,
       byweekday: updated.byweekday,
       durationMin: updated.durationMin,

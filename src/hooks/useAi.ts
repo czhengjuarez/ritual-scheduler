@@ -126,3 +126,31 @@ export function useAutofill() {
     mutationFn: (text: string) => sendJSON<{ draft: AutofillDraft }>("/api/autofill", "POST", { text }),
   });
 }
+
+export interface ConverseMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ConverseResult {
+  action: "ask" | "propose" | "route";
+  message: string;
+  jobSlugs: string[];
+  teamSize: number | null;
+  workMode: "remote" | "hybrid" | "in-person" | null;
+  horizonWeeks: number | null;
+  destination: "plan" | "ritual" | "calendar" | "audit" | null;
+  suggestion?: SuggestCadenceResult;
+}
+
+/**
+ * The front door's conversational cadence builder (PLAN.md §5.2) — each call
+ * sends the whole transcript so far and gets back either a follow-up
+ * question, a route (they wanted something else entirely), or a ready
+ * SuggestCadenceResult to review once enough has been gathered.
+ */
+export function useConverseIntent() {
+  return useMutation({
+    mutationFn: (messages: ConverseMessage[]) => sendJSON<ConverseResult>("/api/intent/converse", "POST", { messages }),
+  });
+}

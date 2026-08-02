@@ -28,3 +28,9 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
+
+# Google OAuth client id (public-safe value, but keep the pattern identical
+# to TeamRitualAudit so the suite's one shared client id lives the same way
+# in both repos — see suite-auth-strategy memory).
+src/config/google-auth.ts
+!src/config/google-auth.example.ts

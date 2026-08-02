@@ -27,8 +27,12 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div
-        className={`w-full ${wide ? "max-w-2xl" : "max-w-lg"} rounded-xl shadow-lg`}
-        style={{ background: "var(--of-bg-elevated)", border: "1px solid var(--of-border-line)" }}
+        className={`w-full ${wide ? "max-w-2xl" : "max-w-lg"} shadow-lg`}
+        style={{
+          background: "var(--of-bg-elevated)",
+          border: "1px solid var(--of-border-line)",
+          borderRadius: "var(--of-radius-2xl)",
+        }}
       >
         <div className="flex items-center justify-between border-b px-5 py-3.5" style={{ borderColor: "var(--of-border-line)" }}>
           <h2 className="text-sm font-semibold">{title}</h2>

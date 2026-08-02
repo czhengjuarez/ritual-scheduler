@@ -36,6 +36,13 @@
       "when": 1785633195239,
       "tag": "0004_large_valkyrie",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785690874343,
+      "tag": "0005_special_karma",
+      "breakpoints": true
     }
   ]
 }

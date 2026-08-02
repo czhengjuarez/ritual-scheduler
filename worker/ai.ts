@@ -88,6 +88,288 @@ ai.get("/search", async (c) => {
   return c.json({ items });
 });
 
+// ─── Conversational cadence builder ────────────────────────────────────────
+// The front door's freeform box (PLAN.md §5.2, revised 2026-08-02): instead
+// of classifying one message into a destination and handing off to a static
+// page (the old "gallery" destination just linked to a filtered /cadences
+// list), this holds a short back-and-forth — asking for whatever's still
+// missing (a job, a team size) one question at a time — until it has enough
+// to actually generate a proposal via generateCadenceSuggestion below, which
+// the frontend can then build straight onto the calendar on confirmation.
+// "calendar"/"ritual"/"audit"/blank-"plan" asks are still a one-shot route,
+// same discipline as before: never trust the model's own adherence to its
+// schema, so jobSlugs still gets re-checked against the real table below.
+
+const CONVERSE_ACTIONS = ["ask", "propose", "route"] as const;
+type ConverseAction = (typeof CONVERSE_ACTIONS)[number];
+const CONVERSE_ROUTES = ["plan", "ritual", "calendar", "audit"] as const;
+type ConverseRoute = (typeof CONVERSE_ROUTES)[number];
+
+function buildConverseTool(jobSlugsAllowed: string[]) {
+  return {
+    type: "function" as const,
+    function: {
+      name: "respond",
+      description: "Decide how to respond next in this cadence-building conversation.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: CONVERSE_ACTIONS,
+            description:
+              "ask: you still need one more piece of info before you can propose a cadence. " +
+              "propose: you now have at least one job and a team size, so design one. " +
+              'route: they clearly want something else entirely — see "destination".',
+          },
+          message: {
+            type: "string",
+            description: "What to say to the user: the single follow-up question (ask), a short 1-2 sentence confirm-style summary (propose), or a short heads-up (route).",
+          },
+          jobSlugs: {
+            type: "array",
+            items: { type: "string", description: `one of: ${jobSlugsAllowed.join(", ")}` },
+            description: "every job-to-be-done established so far across the whole conversation, cumulative",
+          },
+          teamSize: { type: "integer" },
+          workMode: { type: "string", enum: ["remote", "hybrid", "in-person"] },
+          horizonWeeks: { type: "integer", description: "plan length in weeks; default to 12 if never mentioned" },
+          destination: {
+            type: "string",
+            enum: CONVERSE_ROUTES,
+            description:
+              'only set when action is "route". plan: wants to start completely blank, no specific job/team in mind. ' +
+              "ritual: wants to browse or author ritual content in the library — NOT scheduling one anywhere. " +
+              "calendar: wants to go back to a plan they already have. audit: wants to assess how the team is doing, not schedule anything new. " +
+              "Important: wanting a specific named ritual actually scheduled/recurring (a 1:1, a standup, a retro, however small) is action='propose', never destination='ritual' — 'ritual' is only for browsing the library with no scheduling intent at all.",
+          },
+        },
+        required: ["action", "message"],
+      },
+    },
+  };
+}
+
+interface ConverseMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+interface ConverseResult {
+  action: ConverseAction;
+  message: string;
+  jobSlugs: string[];
+  teamSize: number | null;
+  workMode: "remote" | "hybrid" | "in-person" | null;
+  horizonWeeks: number | null;
+  destination: ConverseRoute | null;
+}
+
+function sanitizeConverseResult(raw: Record<string, unknown>, validJobSlugs: Set<string>): ConverseResult {
+  const jobSlugsRaw = Array.isArray(raw.jobSlugs) ? (raw.jobSlugs as unknown[]) : [];
+  const action: ConverseAction = (CONVERSE_ACTIONS as readonly string[]).includes(raw.action as string) ? (raw.action as ConverseAction) : "ask";
+  return {
+    action,
+    message: typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : "Could you say a bit more about what you're trying to build?",
+    jobSlugs: jobSlugsRaw.filter((s): s is string => typeof s === "string" && validJobSlugs.has(s)),
+    teamSize: typeof raw.teamSize === "number" && raw.teamSize > 0 ? Math.round(raw.teamSize) : null,
+    workMode: raw.workMode === "remote" || raw.workMode === "hybrid" || raw.workMode === "in-person" ? raw.workMode : null,
+    horizonWeeks: typeof raw.horizonWeeks === "number" && raw.horizonWeeks > 0 ? Math.min(52, Math.round(raw.horizonWeeks)) : null,
+    destination: action === "route" && (CONVERSE_ROUTES as readonly string[]).includes(raw.destination as string) ? (raw.destination as ConverseRoute) : null,
+  };
+}
+
+const SINGLE_RITUAL_SLOT_FREQ: Record<string, "weekly" | "biweekly" | "monthly"> = {
+  weekly: "weekly",
+  biweekly: "biweekly",
+  monthly: "monthly",
+  quarterly: "monthly",
+  annual: "monthly",
+  adhoc: "weekly",
+  rotation: "weekly",
+};
+
+/**
+ * Some asks name one specific, already-known ritual directly ("a 1:1",
+ * "our standup") rather than describing a goal for the AI to design a
+ * cadence around. Handing that to the cadence-generation model anyway risks
+ * exactly what motivated this: a "mile-long list of top picks, none of
+ * which is a real 1:1" — topK retrieval always returns candidates, and a
+ * generation model asked to "design a cadence" doesn't reliably resist
+ * padding it out. A dominant, unambiguous semantic match against the raw
+ * conversation text sidesteps the generation model entirely: build a
+ * trivial one-slot definition straight from that ritual's own scheduling
+ * defaults instead of asking the model to invent one.
+ */
+// "1:1" is common enough, and short/ambiguous enough for an embedding model,
+// that it's worth a literal check ahead of semantic search: "need to plan
+// 1:1" scores Manager 1:1 at only ~0.62 (below the threshold below) because
+// "plan" pulls the embedding toward the library's many *planning* rituals
+// instead — a human reads that as "schedule a 1:1" instantly, an embedding
+// doesn't. Text match is more reliable than vector similarity for this one
+// specific, extremely common shorthand.
+const ONE_ON_ONE_PATTERN = /\b1[\s:-]?on[\s:-]?1\b|\b1:1\b|\bone[\s-]?on[\s-]?one\b/i;
+
+async function findSingleRitualMatch(env: Env, db: Db, text: string) {
+  if (ONE_ON_ONE_PATTERN.test(text)) {
+    const [row] = await db.select().from(rituals).where(eq(rituals.slug, "manager-1-1")).limit(1);
+    if (row) return row;
+  }
+  const matches = await semanticSearch(env, text, { type: "ritual", topK: 3 });
+  if (matches.length === 0) return null;
+  const [top, second] = matches;
+  if (top.score < 0.72) return null;
+  if (second && top.score - second.score < 0.04) return null; // ambiguous — let the normal flow handle it
+  const [row] = await db.select().from(rituals).where(eq(rituals.id, top.refId)).limit(1);
+  return row ?? null;
+}
+
+function singleRitualDefinition(ritual: (typeof rituals.$inferSelect)): CadenceDefinition {
+  return {
+    slots: [
+      {
+        name: ritual.title,
+        freq: SINGLE_RITUAL_SLOT_FREQ[ritual.defaultCadence] ?? "weekly",
+        byweekday: 2,
+        durationMin: ritual.durationMin ?? 30,
+        rotation: [{ position: 0, ritualSlug: ritual.slug, label: null }],
+      },
+    ],
+    standalone: [],
+  };
+}
+
+ai.post("/intent/converse", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+
+  if (!(await checkRateLimit(db, session.teamId))) return c.json({ error: "AI rate limit reached — try again in a bit" }, 429);
+
+  const body = await c.req.json<{ messages?: ConverseMessage[] }>().catch(() => ({}) as Record<string, never>);
+  const history = (body.messages ?? []).filter(
+    (m): m is ConverseMessage => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim().length > 0,
+  );
+  if (history.length === 0) return c.json({ error: "messages is required" }, 400);
+  if (history.length > 20) return c.json({ error: "this conversation has gotten long — start a new one" }, 400);
+
+  // A dominant, unambiguous single-ritual match is checked before the model
+  // even runs — this is what actually fixes "a plain '1:1' ask gets odd
+  // follow-up questions": a small fast tool-calling model was inconsistent
+  // turn to turn about whether that's action='propose' or a
+  // destination='ritual' route, and either way it shouldn't need to gather
+  // a job/team-size for something that's already a known, fully-specified
+  // ritual. Skipping the model call entirely here is both more reliable and
+  // cheaper than trying to prompt-engineer around that inconsistency.
+  const conversationText = history
+    .filter((m) => m.role === "user")
+    .map((m) => m.content)
+    .join(" ");
+  const singleMatch = await findSingleRitualMatch(c.env, db, conversationText);
+  if (singleMatch) {
+    const definition = singleRitualDefinition(singleMatch);
+    const run = await logRun(db, { teamId: session.teamId, kind: "suggest", input: { converse: true, text: conversationText }, output: definition });
+    return c.json({
+      action: "propose" as const,
+      message: `Found "${singleMatch.title}" in the library${singleMatch.summary ? ` — ${singleMatch.summary}` : ""} Want me to add it to your calendar?`,
+      jobSlugs: [],
+      teamSize: null,
+      workMode: null,
+      horizonWeeks: null,
+      destination: null,
+      suggestion: {
+        runId: run.id,
+        definition,
+        durationWeeks: 12,
+        candidates: [{ slug: singleMatch.slug, title: singleMatch.title }],
+      },
+    });
+  }
+
+  const jobRows = await db.select().from(jobs);
+  const jobSlugsAllowed = jobRows.map((j) => j.slug);
+
+  const systemPrompt = [
+    "You're a friendly assistant in a team-ritual scheduling app, helping someone design a recurring meeting cadence for their team through a short conversation.",
+    `Jobs to be done (only ever use these slugs): ${jobRows.map((j) => `${j.slug} (${j.name})`).join(", ")}`,
+    "You MUST call `respond` exactly once per turn.",
+    "To design a cadence you need at minimum one job-to-be-done and a team size. Work mode and plan length are optional — default plan length to 12 weeks if it never comes up.",
+    "If something required is still missing, set action='ask' and ask for exactly ONE missing thing next — don't list everything at once.",
+    "If they're specifically asking for a 1:1 / one-on-one, team size is always 2 — never ask for it. If no other goal is mentioned, default jobSlugs to ['build-cohesion'] and move straight to propose instead of asking what the 1:1 is for.",
+    "The moment you have at least one job and a team size, whether given all at once or gathered turn by turn, set action='propose' with a short 1-2 sentence summary of what you're about to build and ask them to confirm.",
+    "If the very first message is clearly not about building a cadence at all — they want their existing calendar, a single ritual, an audit, or an entirely blank plan with no specifics — set action='route' instead, and you MUST also set destination to the matching one of plan/ritual/calendar/audit. Never set action='route' without also setting destination.",
+    "Always carry forward every fact already established earlier in the conversation into jobSlugs/teamSize/workMode/horizonWeeks, even on turns where you're asking or talking about something else — never drop a fact once given.",
+  ].join(" ");
+
+  let result: ChatToolResult;
+  try {
+    result = await runChatToolWithRetry(
+      c.env.AI,
+      CHAT_MODEL,
+      {
+        messages: [{ role: "system", content: systemPrompt }, ...history],
+        tools: [buildConverseTool(jobSlugsAllowed)],
+        tool_choice: { type: "function", function: { name: "respond" } },
+        chat_template_kwargs: { enable_thinking: false },
+        max_completion_tokens: 400,
+        temperature: 0.3,
+      },
+      2,
+    );
+  } catch {
+    return c.json({ error: "the AI service is temporarily unavailable — try again shortly" }, 502);
+  }
+
+  const rawArgs = result.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+  if (!rawArgs) return c.json({ error: "the model did not respond — try again" }, 502);
+  const parsed = sanitizeConverseResult(parseToolCallArguments(rawArgs) as Record<string, unknown>, new Set(jobSlugsAllowed));
+
+  await logRun(db, { teamId: session.teamId, kind: "intent", input: { messages: history }, output: parsed });
+
+  // Defensive downgrade: "route" with no usable destination would otherwise
+  // reach the frontend's switch statement and silently do nothing — the
+  // model's own message is usually still fine here, so just keep the
+  // conversation open instead of dropping it on the floor.
+  if (parsed.action === "route" && !parsed.destination) {
+    return c.json({ ...parsed, action: "ask" as const });
+  }
+
+  if (parsed.action !== "propose") {
+    return c.json(parsed);
+  }
+
+  // Defensive downgrade: never claim "propose" without the minimum the
+  // model was explicitly told it needs — same discipline as everywhere
+  // else here, don't trust the schema alone.
+  if (parsed.jobSlugs.length === 0 || !parsed.teamSize) {
+    return c.json({
+      ...parsed,
+      action: "ask" as const,
+      message: parsed.jobSlugs.length === 0 ? "Which job or team does this cadence need to serve?" : "How many people are on the team?",
+    });
+  }
+
+  const outcome = await generateCadenceSuggestion(c.env, db, session.teamId, {
+    jobSlugs: parsed.jobSlugs,
+    teamSizeMin: parsed.teamSize,
+    teamSizeMax: parsed.teamSize,
+    workMode: parsed.workMode ?? undefined,
+    horizonWeeks: parsed.horizonWeeks ?? 12,
+  });
+
+  if (!outcome.ok) {
+    return c.json({
+      ...parsed,
+      action: "ask" as const,
+      message: "I couldn't find enough in the library to build that yet — want to try a different job, or start blank instead?",
+    });
+  }
+
+  return c.json({
+    ...parsed,
+    suggestion: { runId: outcome.runId, definition: outcome.definition, durationWeeks: outcome.durationWeeks, candidates: outcome.candidates },
+  });
+});
+
 // ─── Cadence suggestion ─────────────────────────────────────────────────────
 // "Design my quarter" (PLAN.md §5.6 #2). Retrieval-grounded: the model only
 // ever sees a candidate slug list pulled from Vectorize for the selected
@@ -260,34 +542,47 @@ function sanitizeDefinition(raw: { slots?: RawSlot[]; standalone?: RawStandalone
   return { slots, standalone };
 }
 
-ai.post("/suggest-cadence", async (c) => {
-  const session = c.get("session");
-  const db = getDb(c.env.DB);
+type GenerateCadenceOutcome =
+  | { ok: true; runId: number; definition: CadenceDefinition; durationWeeks: number; candidates: { slug: string; title: string }[] }
+  | { ok: false; status: 400 | 422 | 502; error: string };
 
-  if (!(await checkRateLimit(db, session.teamId))) return c.json({ error: "AI rate limit reached — try again in a bit" }, 429);
-
-  const body = await c.req.json<SuggestCadenceBody>().catch(() => ({}) as SuggestCadenceBody);
+/**
+ * The actual generation pipeline, factored out so both the one-shot
+ * `/suggest-cadence` endpoint and the conversational builder's "propose"
+ * step (below) share one implementation instead of two copies drifting
+ * apart. Rate limiting stays with the caller — this runs exactly one
+ * generation, however it got triggered.
+ */
+async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body: SuggestCadenceBody): Promise<GenerateCadenceOutcome> {
   const jobSlugs = (body.jobSlugs ?? []).filter(Boolean);
-  if (jobSlugs.length === 0) return c.json({ error: "at least one job is required" }, 400);
+  if (jobSlugs.length === 0) return { ok: false, status: 400, error: "at least one job is required" };
   const horizonWeeks = Math.min(52, Math.max(1, Math.round(body.horizonWeeks ?? 12)));
 
   const jobRows = await db.select().from(jobs).where(inArray(jobs.slug, jobSlugs));
-  if (jobRows.length === 0) return c.json({ error: "unknown jobs" }, 400);
+  if (jobRows.length === 0) return { ok: false, status: 400, error: "unknown jobs" };
 
   const retrievalQuery = jobRows.map((j) => [j.name, j.description].filter(Boolean).join(" — ")).join(". ");
-  const matches = await semanticSearch(c.env, retrievalQuery, { type: "ritual", topK: 24 });
-  if (matches.length === 0) return c.json({ error: "not enough indexed content yet — run the embedding backfill first" }, 422);
+  const matches = await semanticSearch(env, retrievalQuery, { type: "ritual", topK: 24 });
+  if (matches.length === 0) return { ok: false, status: 422, error: "not enough indexed content yet — run the embedding backfill first" };
 
   const candidateRows = await db
     .select()
     .from(rituals)
     .where(inArray(rituals.id, matches.map((m) => m.refId)));
-  if (candidateRows.length === 0) return c.json({ error: "not enough indexed content yet" }, 422);
+  if (candidateRows.length === 0) return { ok: false, status: 422, error: "not enough indexed content yet" };
 
   const candidateSlugs = candidateRows.map((r) => r.slug);
   const candidateLines = candidateRows
-    .map((r) => `- ${r.slug}: "${r.title}" (${r.engagement}, ${r.load} load${r.durationMin ? `, ${r.durationMin}min` : ""})${r.summary ? ` — ${r.summary}` : ""}`)
+    .map(
+      (r) =>
+        `- ${r.slug}: "${r.title}" (${r.engagement}, ${r.load} load${r.durationMin ? `, ${r.durationMin}min` : ""}, size ${r.sizeMin ?? "?"}-${r.sizeMax ?? "?"})${r.summary ? ` — ${r.summary}` : ""}`,
+    )
     .join("\n");
+
+  // Effective team size for the frequency rule below: prefer the max of the
+  // given range (the rule is about avoiding overloading the *largest*
+  // plausible group), falling back to the min if only that was given.
+  const teamSize = body.teamSizeMax ?? body.teamSizeMin;
 
   const contextLines = [
     `Jobs to serve: ${jobRows.map((j) => j.name).join(", ")}`,
@@ -303,14 +598,17 @@ ai.post("/suggest-cadence", async (c) => {
     "You design recurring team meeting cadences. You MUST call propose_cadence exactly once. " +
     "Every ritualSlug you use must come from the candidate list — never invent one. " +
     "Prefer a small, sustainable set of slots over cramming in every candidate. " +
-    "byweekday is 0=Sunday..6=Saturday. Spread slots across different weekdays rather than stacking them on one day.";
+    "byweekday is 0=Sunday..6=Saturday. Spread slots across different weekdays rather than stacking them on one day. " +
+    (teamSize
+      ? `The team size given is ${teamSize}. The larger the team, the less often a whole-team ritual should repeat: for a slot whose rotation is entirely large-group rituals (size range covers ${teamSize} or has no upper bound), prefer biweekly or monthly over weekly once the team is bigger than about 15 people — the larger past that, the less frequent it should be. Smaller-group or pair/subteam rituals (size range well below ${teamSize}) can still repeat weekly regardless of overall team size.`
+      : "No team size was given — don't guess one; frequency doesn't need to account for team size here.");
 
   const userPrompt = `${contextLines.join("\n")}\n\nCandidate rituals (use only these slugs):\n${candidateLines}\n\nPropose a cadence for this team.`;
 
   const tool = buildCadenceTool();
   let result: ChatToolResult;
   try {
-    result = await runChatToolWithRetry(c.env.AI, CHAT_MODEL, {
+    result = await runChatToolWithRetry(env.AI, CHAT_MODEL, {
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
@@ -325,27 +623,41 @@ ai.post("/suggest-cadence", async (c) => {
       temperature: 0,
     });
   } catch {
-    return c.json({ error: "the AI service is temporarily unavailable — try again shortly" }, 502);
+    return { ok: false, status: 502, error: "the AI service is temporarily unavailable — try again shortly" };
   }
 
   const rawArgs = result.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
-  if (!rawArgs) return c.json({ error: "the model did not return a proposal — try again" }, 502);
+  if (!rawArgs) return { ok: false, status: 502, error: "the model did not return a proposal — try again" };
   const parsed = parseToolCallArguments(rawArgs);
 
   const validSlugs = new Set(candidateSlugs);
   const definition = sanitizeDefinition(parsed as { slots?: RawSlot[]; standalone?: RawStandalone[] }, validSlugs);
   if (definition.slots.length === 0 && definition.standalone.length === 0) {
-    return c.json({ error: "the model's proposal didn't use any valid rituals — try again" }, 502);
+    return { ok: false, status: 502, error: "the model's proposal didn't use any valid rituals — try again" };
   }
 
-  const run = await logRun(db, { teamId: session.teamId, kind: "suggest", input: body, output: definition });
+  const run = await logRun(db, { teamId, kind: "suggest", input: body, output: definition });
 
-  return c.json({
+  return {
+    ok: true,
     runId: run.id,
     definition,
     durationWeeks: horizonWeeks,
     candidates: candidateRows.map((r) => ({ slug: r.slug, title: r.title })),
-  });
+  };
+}
+
+ai.post("/suggest-cadence", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+
+  if (!(await checkRateLimit(db, session.teamId))) return c.json({ error: "AI rate limit reached — try again in a bit" }, 429);
+
+  const body = await c.req.json<SuggestCadenceBody>().catch(() => ({}) as SuggestCadenceBody);
+  const outcome = await generateCadenceSuggestion(c.env, db, session.teamId, body);
+  if (!outcome.ok) return c.json({ error: outcome.error }, outcome.status);
+
+  return c.json({ runId: outcome.runId, definition: outcome.definition, durationWeeks: outcome.durationWeeks, candidates: outcome.candidates });
 });
 
 ai.post("/suggest-cadence/:runId/accept", async (c) => {

@@ -1,5 +1,93 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@200;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
 @import "tailwindcss";
 @import "@ops-forward/keel/styles.css";
+
+/*
+ * Tailwind's default radius scale (sm=4px … 2xl=16px) is much rounder than
+ * Keel's (sm=2px … 2xl=10px, see tokens.css). Rather than hand-edit every
+ * raw `rounded-*` utility in the app to a Keel var, override the scale
+ * itself so `rounded-md`/`rounded-lg`/etc. already match Keel everywhere.
+ */
+@theme {
+  --radius-xs: var(--of-radius-xs);
+  --radius-sm: var(--of-radius-sm);
+  --radius-md: var(--of-radius-md);
+  --radius-lg: var(--of-radius-lg);
+  --radius-xl: var(--of-radius-xl);
+  --radius-2xl: var(--of-radius-2xl);
+}
+
+/*
+ * Per explicit direction: every corner in the app uses the smallest radius
+ * in Keel's scale (xs = 0px), including the pill token — this overrides the
+ * --of-radius-* custom properties Keel's own tokens.css defines, so it
+ * flattens Keel's own components (buttons, cards, inputs, badges, switch)
+ * as well as anything in this app built on top of them (Modal, Chip, and
+ * the Tailwind rounded-* utilities remapped to these vars below).
+ */
+:root {
+  --of-radius-xs: 0px;
+  --of-radius-sm: 0px;
+  --of-radius-md: 0px;
+  --of-radius-lg: 0px;
+  --of-radius-xl: 0px;
+  --of-radius-2xl: 0px;
+  --of-radius-pill: 0px;
+}
+
+/* Keel's styles.css hardcodes these four as literal px instead of the
+   --of-radius-* vars above, so the token override alone doesn't reach
+   them — same specificity, later in the cascade, so no !important needed. */
+.of-badge,
+.of-input,
+.of-select,
+.of-textarea,
+.of-switch__track,
+.of-switch__thumb {
+  border-radius: 0;
+}
+
+/*
+ * @ops-forward/keel's tokens.css uses light-dark() throughout, which only
+ * switches (and in some engines only resolves at all) once color-scheme is
+ * explicitly declared. The package doesn't ship this wiring — design101
+ * (the visual reference, see keel-design101-look-and-feel memory) adds it
+ * in its own tokens copy, so consumers of the npm package have to add it
+ * too. Without it, dark mode silently no-ops and some light-dark() values
+ * can resolve as invalid instead of falling back to light.
+ */
+:root {
+  color-scheme: light dark;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* font-size is rem-based and set on html only — repeating it on body/#root
+   would compound, since rem re-resolves against html's *updated* size. */
+html {
+  font-size: var(--of-text-base);
+}
+
+html,
+body,
+#root {
+  font-family: var(--of-font-sans);
+  line-height: var(--of-leading-normal);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--of-font-display);
+  font-weight: 600;
+  letter-spacing: var(--of-tracking-tight);
+  line-height: var(--of-leading-tight);
+}
 
 body {
   background: var(--of-bg-base);

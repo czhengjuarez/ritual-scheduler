@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { cardClass, badgeClass, buttonClass, type KeelBadgeVariant } from "@ops-forward/keel";
-import { Clock, Repeat, CalendarRange, Share2, Sparkles } from "lucide-react";
+import { Clock, Repeat, CalendarRange, Share2, Sparkles, Trash2 } from "lucide-react";
 import { useSession } from "../hooks/useSession";
-import { useRequestPublicRitual } from "../hooks/useLibrary";
+import { useRequestPublicRitual, useDeleteRitual } from "../hooks/useLibrary";
 import { RemixModal } from "../planner/RemixModal";
 import type { CategoryDto, RitualDto } from "../hooks/useLibrary";
 
@@ -29,11 +29,14 @@ function engagementLabel(r: RitualDto): string {
 export function RitualCard({ ritual, category }: { ritual: RitualDto; category?: CategoryDto }) {
   const { data: session } = useSession();
   const requestPublic = useRequestPublicRitual();
+  const deleteRitual = useDeleteRitual();
   const [showRemix, setShowRemix] = useState(false);
   // Team-owned and not already public: this team can ask for public review
   // (PLAN.md §5.4 — publishing publicly is an optional second step, not the
-  // default, for a ritual added the fast way).
-  const canRequestPublic = ritual.visibility === "team" && ritual.ownerTeamId === session?.team?.id;
+  // default, for a ritual added the fast way). Same ownership check gates
+  // deleting it — the public library is never editable from here.
+  const isOwnTeamRitual = ritual.visibility === "team" && ritual.ownerTeamId === session?.team?.id;
+  const canRequestPublic = isOwnTeamRitual;
 
   return (
     <div className={cardClass({ className: "p-4 flex flex-col gap-3 h-full" })}>
@@ -99,6 +102,20 @@ export function RitualCard({ ritual, category }: { ritual: RitualDto; category?:
           >
             <Share2 size={20} strokeWidth={1.75} className="!w-3.5 !h-3.5" />
             {requestPublic.isPending ? "Requesting…" : "Publish publicly"}
+          </button>
+        )}
+        {isOwnTeamRitual && (
+          <button
+            className={buttonClass({ variant: "ghost", size: "sm" })}
+            style={{ color: "var(--of-fg-danger)" }}
+            disabled={deleteRitual.isPending}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (window.confirm(`Delete "${ritual.title}"? This can't be undone.`)) deleteRitual.mutate(ritual.id);
+            }}
+          >
+            <Trash2 size={20} strokeWidth={1.75} className="!w-3.5 !h-3.5" />
+            {deleteRitual.isPending ? "Deleting…" : "Delete"}
           </button>
         )}
       </div>

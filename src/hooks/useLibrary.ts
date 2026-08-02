@@ -134,3 +134,12 @@ export function useRequestPublicRitual() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["rituals"] }),
   });
 }
+
+/** Team-owned only — the backend refuses to delete a public library ritual. */
+export function useDeleteRitual() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => sendJSON<{ success: true }>(`/api/rituals/${id}`, "DELETE"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["rituals"] }),
+  });
+}

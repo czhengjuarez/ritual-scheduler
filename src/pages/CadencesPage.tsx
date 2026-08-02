@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, Sparkles } from "lucide-react";
-import { cardClass, badgeClass, selectClass, inputClass } from "@ops-forward/keel";
+import { cardClass, badgeClass, buttonClass, selectClass, inputClass } from "@ops-forward/keel";
 import { useCadenceGallery } from "../hooks/useCadences";
 import { useJobs } from "../hooks/useLibrary";
 import { useCadenceSemanticSearch } from "../hooks/useSearch";
 import { Chip } from "../components/Chip";
 import { CadencePreviewModal } from "../planner/CadencePreviewModal";
+import { SuggestCadenceModal } from "../planner/SuggestCadenceModal";
 import type { CadenceTemplateDto } from "../hooks/useCadences";
 
 const WORK_MODES = ["remote", "hybrid", "in-person"] as const;
@@ -25,6 +26,7 @@ const WORK_MODES = ["remote", "hybrid", "in-person"] as const;
 export function CadencesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<CadenceTemplateDto | null>(null);
+  const [showSuggest, setShowSuggest] = useState(false);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [smartMode, setSmartMode] = useState(false);
@@ -44,6 +46,7 @@ export function CadencesPage() {
 
   const selectedJobs = useMemo(() => new Set((searchParams.get("job") ?? "").split(",").filter(Boolean)), [searchParams]);
   const workMode = searchParams.get("workMode") ?? "";
+  const teamSize = searchParams.get("teamSize") ?? "";
   const durationMin = searchParams.get("durationMin") ?? undefined;
   const durationMax = searchParams.get("durationMax") ?? undefined;
 
@@ -51,6 +54,7 @@ export function CadencesPage() {
   const { data, isLoading: keywordLoading } = useCadenceGallery({
     job: selectedJobs.size ? [...selectedJobs].join(",") : undefined,
     workMode: workMode || undefined,
+    teamSize: teamSize ? Number(teamSize) : undefined,
     durationMin: durationMin ? Number(durationMin) : undefined,
     durationMax: durationMax ? Number(durationMax) : undefined,
     q: debouncedSearch || undefined,
@@ -72,6 +76,12 @@ export function CadencesPage() {
   const setWorkMode = (value: string) => {
     const params = new URLSearchParams(searchParams);
     value ? params.set("workMode", value) : params.delete("workMode");
+    setSearchParams(params, { replace: true });
+  };
+
+  const setTeamSize = (value: string) => {
+    const params = new URLSearchParams(searchParams);
+    value ? params.set("teamSize", value) : params.delete("teamSize");
     setSearchParams(params, { replace: true });
   };
 
@@ -139,6 +149,23 @@ export function CadencesPage() {
             </option>
           ))}
         </select>
+        <input
+          type="number"
+          min={1}
+          className={inputClass({ className: "w-28" })}
+          placeholder="Team size"
+          value={teamSize}
+          onChange={(e) => !smartMode && setTeamSize(e.target.value)}
+          disabled={smartMode}
+        />
+        <button
+          className={buttonClass({ variant: "secondary", size: "sm" })}
+          disabled={smartMode || selectedJobs.size === 0}
+          onClick={() => setShowSuggest(true)}
+          title={selectedJobs.size === 0 ? "Pick at least one job above first" : undefined}
+        >
+          <Sparkles size={16} strokeWidth={1.75} style={{ color: "var(--of-fg-brand)" }} /> Or let AI design one for you
+        </button>
       </div>
 
       {smartMode && (
@@ -199,6 +226,14 @@ export function CadencesPage() {
       ) : null}
 
       {selected && <CadencePreviewModal cadence={selected} onClose={() => setSelected(null)} />}
+      {showSuggest && (
+        <SuggestCadenceModal
+          initialJobs={[...selectedJobs]}
+          teamSize={teamSize || undefined}
+          workMode={workMode || undefined}
+          onClose={() => setShowSuggest(false)}
+        />
+      )}
     </div>
   );
 }

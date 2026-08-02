@@ -23,7 +23,7 @@ export function AdminLogin() {
       <ShieldCheck size={20} strokeWidth={1.75} className="mb-3" style={{ color: "var(--of-fg-brand)" }} />
       <h1 className="text-xl font-semibold mb-1">Admin</h1>
       <p className="mb-6" style={{ color: "var(--of-fg-muted)" }}>
-        Password-gated (PLAN.md §7) — approves what leaves a team's own workspace for the public gallery.
+        Password-gated — approves what leaves a team's own workspace for the public gallery.
       </p>
       <div className="flex flex-col gap-3">
         <div>

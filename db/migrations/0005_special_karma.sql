@@ -1,0 +1,1 @@
+ALTER TABLE `slots` ADD `interval` integer DEFAULT 1 NOT NULL;

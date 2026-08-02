@@ -17,6 +17,7 @@ import { ics } from "./ics";
 import { admin } from "./admin";
 import { adminAuth, adminAuthRoutes } from "./adminAuth";
 import { ai, aiAdmin } from "./ai";
+import { auth } from "./auth";
 
 export interface Env {
   DB: D1Database;
@@ -28,10 +29,14 @@ export interface Env {
   AI: Ai;
   VECTORIZE: VectorizeIndex;
 
+  // Google sign-in (PLAN.md §7) — anonymous sessions are the default even
+  // once these are set; AUTH_ENABLED is what actually surfaces the "Sign in"
+  // UI, so a deploy can carry real credentials without switching behavior on.
+  GOOGLE_CLIENT_ID?: string;
+  AUTH_ENABLED?: string;
+
   // Later phases:
   // MEDIA: R2Bucket;                 -- Phase 8: covers, attachments, exports
-  // GOOGLE_CLIENT_ID: string;        -- Phase 6: Google sign-in (module ported
-  //                                     from TeamRitualAudit/src/auth/)
 }
 
 type Session = { userId: string; teamId: string };
@@ -74,14 +79,25 @@ app.use("/api/*", async (c, next) => {
   return next();
 });
 
-/** Proves the D1 + Drizzle + session plumbing works end to end. */
+/**
+ * The frontend's one call for "who am I" — anonymous or Google-linked alike,
+ * plus whether sign-in is even switched on (AUTH_ENABLED), so the header can
+ * decide whether to render a "Sign in" button at all.
+ */
 app.get("/api/session", async (c) => {
   const session = c.get("session");
   const db = getDb(c.env.DB);
   const [team] = await db.select().from(teams).where(eq(teams.id, session.teamId)).limit(1);
-  return c.json({ userId: session.userId, team });
+  const [user] = await db.select().from(users).where(eq(users.id, session.userId)).limit(1);
+  return c.json({
+    userId: session.userId,
+    team,
+    user: user ? { name: user.name, email: user.email, avatarUrl: user.avatarUrl, role: user.role, signedIn: !!user.googleSub } : null,
+    authEnabled: c.env.AUTH_ENABLED === "true",
+  });
 });
 
+app.route("/api/auth", auth);
 app.route("/api", library);
 app.route("/api", planner);
 app.route("/api", cadences);

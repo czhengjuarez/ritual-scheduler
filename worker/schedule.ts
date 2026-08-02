@@ -12,6 +12,7 @@ export type Freq = "weekly" | "biweekly" | "monthly";
 export interface SlotLike {
   anchorDate: string;
   freq: Freq;
+  interval?: number | null; // every N weeks (weekly) or N months (monthly); absent/null = 1
   cycleLength: number;
   activeFrom?: string | null;
   activeTo?: string | null;
@@ -181,7 +182,10 @@ export function generateSlotDates(slot: SlotLike, from: string, to: string): { d
   };
 
   if (slot.freq === "weekly" || slot.freq === "biweekly") {
-    const step = slot.freq === "weekly" ? 7 : 14;
+    // `biweekly` is a legacy freq value (step fixed at 14) kept only so old
+    // rows keep working — new slots express "every 2 weeks" as
+    // freq="weekly", interval=2 instead.
+    const step = slot.freq === "biweekly" ? 14 : 7 * Math.max(1, slot.interval ?? 1);
     let epoch = toEpochDay(parseISODate(slot.anchorDate));
     const toEpoch = toEpochDay(parseISODate(upperBound));
     for (let index = 0; epoch <= toEpoch && index < MAX_ITERATIONS; index++, epoch += step) {
@@ -194,6 +198,7 @@ export function generateSlotDates(slot: SlotLike, from: string, to: string): { d
   const anchor = parseISODate(slot.anchorDate);
   const weekday = weekdayOf(slot.anchorDate);
   const nth = deriveNth(anchor);
+  const monthStep = Math.max(1, slot.interval ?? 1); // 1=monthly, 3=quarterly, 12=annual
   const toEpoch = toEpochDay(parseISODate(upperBound));
   let y = anchor.y;
   let m = anchor.m;
@@ -209,9 +214,9 @@ export function generateSlotDates(slot: SlotLike, from: string, to: string): { d
     // A month with no valid Nth weekday (e.g. a "5th Friday" that doesn't
     // exist that month) is skipped without advancing the rotation index —
     // the rotation shouldn't lose a turn just because a month was short.
-    m++;
-    if (m > 12) {
-      m = 1;
+    m += monthStep;
+    while (m > 12) {
+      m -= 12;
       y++;
     }
   }

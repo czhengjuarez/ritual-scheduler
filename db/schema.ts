@@ -223,6 +223,12 @@ export const slots = sqliteTable(
     name: text("name").notNull(),
     color: text("color"),
     freq: text("freq").notNull().default("weekly"), // weekly|biweekly|monthly
+    // Repeat step for weekly/monthly: 1=every week/month, 2=every 2, etc.
+    // "quarterly" and "annual" are just monthly with interval 3 or 12 — not
+    // separate freq values. `biweekly` predates this column and is left as
+    // its own legacy freq value (schedule.ts keeps a fixed-step branch for
+    // it); new slots always use weekly+interval instead of writing it.
+    interval: integer("interval").notNull().default(1),
     byweekday: integer("byweekday").notNull(), // 0=Sun..6=Sat
     nth: integer("nth"), // monthly only: 1..4, or -1 for "last"
     startTime: text("start_time"), // HH:MM, nullable — week-granularity planning is first-class
@@ -329,6 +335,7 @@ export interface CadenceSlotDef {
   name: string;
   color?: string | null;
   freq: "weekly" | "biweekly" | "monthly";
+  interval?: number | null; // every N weeks/months; absent/null = 1
   byweekday: number; // 0=Sun..6=Sat
   nth?: number | null; // monthly only: 1..4, or -1 for "last"
   startTime?: string | null;
@@ -413,7 +420,7 @@ export const aiRuns = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     teamId: text("team_id").notNull().references(() => teams.id, { onDelete: "cascade" }),
     planId: text("plan_id").references(() => plans.id, { onDelete: "set null" }),
-    kind: text("kind").notNull(), // suggest|balance|remix|autofill
+    kind: text("kind").notNull(), // suggest|balance|remix|autofill|intent
     input: text("input", { mode: "json" }).notNull(),
     output: text("output", { mode: "json" }),
     // null = not yet decided, true = accepted/used, false = discarded.

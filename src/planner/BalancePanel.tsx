@@ -38,7 +38,7 @@ export function BalancePanel({ planId }: { planId: string }) {
         <p style={{ color: "var(--of-fg-danger)" }}>Couldn't run the balance check — try again.</p>
       ) : data ? (
         <>
-          <p className="text-sm" style={{ color: "var(--of-fg-default)" }}>{data.narrative}</p>
+          <p className="text-sm" style={{ color: "var(--of-fg-default)", fontWeight: 200 }}>{data.narrative}</p>
           <div className="flex flex-wrap gap-1.5 text-xs">
             <span className={badgeClass({ variant: "default" })}>{data.stats.totalOccurrences} occurrences / {data.stats.weeksInPlan} wk</span>
             <span className={badgeClass({ variant: "default" })}>~{data.stats.avgHoursPerWeek} hrs/week</span>

@@ -1,12 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Sparkles, Repeat, CalendarRange, X } from "lucide-react";
+import { Sparkles, Repeat, CalendarRange, X, Pencil } from "lucide-react";
 import { buttonClass, badgeClass, inputClass, labelClass, cardClass } from "@ops-forward/keel";
 import { Modal } from "../components/Modal";
 import { useJobs } from "../hooks/useLibrary";
 import { useSuggestCadence, useAcceptSuggestion, type SuggestCadenceResult } from "../hooks/useAi";
+import { RitualPickerModal } from "./RitualPickerModal";
 import { WEEKDAY_LABELS } from "../lib/calendar";
 import type { CadenceDefinition } from "../../db/schema";
+import type { RitualDto } from "../hooks/useLibrary";
+
+type SwapTarget = { kind: "slot"; slotIndex: number; posIndex: number } | { kind: "standalone"; index: number };
 
 function offsetLabel(dayOffset: number): string {
   const week = Math.floor(dayOffset / 7) + 1;
@@ -16,10 +20,15 @@ function offsetLabel(dayOffset: number): string {
 
 /**
  * "Design my quarter" (PLAN.md §5.6 #2) — seeded from the same jobs/team
- * size/work mode JobPicker already collected, so this isn't a second intake
- * form, just a different button on the one it has. Two steps: generate (an
- * AI call that can take up to a minute), then review a diff the user can
- * prune before accepting — nothing lands in a real plan without that.
+ * size/work mode already selected on the Cadences gallery (or CreatePlanForm),
+ * so this isn't a second intake form, just a different button next to one
+ * that already has these fields. Two steps: generate (an AI call that can
+ * take up to a minute), then review a diff before accepting — nothing lands
+ * in a real plan without that. Every item in the review is also swappable
+ * (click it to reopen the ritual picker), not just removable — the AI only
+ * proposes from existing library rituals, so if none of them fit, the escape
+ * hatch is the same "leave unassigned" / "create a new ritual" the picker
+ * already offers everywhere else, not just delete-and-live-without-it.
  */
 export function SuggestCadenceModal({
   initialJobs,
@@ -35,7 +44,7 @@ export function SuggestCadenceModal({
   horizonWeeks?: number;
   onClose: () => void;
   /** Called (in addition to navigating to /plan) once the suggested plan is actually created — see CreatePlanForm's onDone for why this matters when we're already on /plan. */
-  onDone?: () => void;
+  onDone?: (planId?: string) => void;
 }) {
   const [horizonWeeks, setHorizonWeeks] = useState(initialHorizon ?? 12);
   const [currentLoad, setCurrentLoad] = useState("");
@@ -43,6 +52,8 @@ export function SuggestCadenceModal({
   const [definition, setDefinition] = useState<CadenceDefinition | null>(null);
   const [name, setName] = useState("AI-suggested plan");
   const [startDate, setStartDate] = useState("");
+  const [swapTarget, setSwapTarget] = useState<SwapTarget | null>(null);
+  const [extraTitles, setExtraTitles] = useState<Map<string, string>>(new Map());
 
   const { data: jobsData } = useJobs();
   const suggest = useSuggestCadence();
@@ -50,8 +61,27 @@ export function SuggestCadenceModal({
   const navigate = useNavigate();
 
   const jobNames = (jobsData?.items ?? []).filter((j) => initialJobs.includes(j.slug)).map((j) => j.name);
-  const titleBySlug = new Map((result?.candidates ?? []).map((c) => [c.slug, c.title]));
+  const titleBySlug = new Map([...(result?.candidates ?? []).map((c): [string, string] => [c.slug, c.title]), ...extraTitles]);
   const ritualLabel = (slug: string | null) => (slug ? (titleBySlug.get(slug) ?? slug) : "Unassigned");
+
+  const applySwap = (ritual: RitualDto | null) => {
+    if (!swapTarget) return;
+    if (ritual) setExtraTitles((prev) => new Map(prev).set(ritual.slug, ritual.title));
+    setDefinition((d) => {
+      if (!d) return d;
+      if (swapTarget.kind === "slot") {
+        const slots = d.slots.map((slot, i) =>
+          i !== swapTarget.slotIndex
+            ? slot
+            : { ...slot, rotation: slot.rotation.map((r, j) => (j !== swapTarget.posIndex ? r : { ...r, ritualSlug: ritual?.slug ?? null, label: null })) },
+        );
+        return { ...d, slots };
+      }
+      const standalone = d.standalone.map((s, i) => (i !== swapTarget.index ? s : { ...s, ritualSlug: ritual?.slug ?? null, titleOverride: null }));
+      return { ...d, standalone };
+    });
+    setSwapTarget(null);
+  };
 
   const generate = () => {
     const teamSizeNum = teamSize ? Number(teamSize) : undefined;
@@ -75,7 +105,7 @@ export function SuggestCadenceModal({
     if (!result || !definition || !startDate) return;
     accept.mutate(
       { runId: result.runId, definition, startDate, durationWeeks: result.durationWeeks, name: name.trim() || undefined },
-      { onSuccess: () => { onDone?.(); navigate("/plan"); } },
+      { onSuccess: (r) => { onDone?.(r.item.id); navigate("/plan"); } },
     );
   };
 
@@ -138,7 +168,16 @@ export function SuggestCadenceModal({
               </div>
               <div className="flex flex-wrap items-center gap-1.5 text-sm">
                 {slot.rotation.map((r, j) => (
-                  <span key={j} className={badgeClass({ variant: "default" })}>{ritualLabel(r.ritualSlug)}</span>
+                  <button
+                    key={j}
+                    className={badgeClass({ variant: "default" })}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                    title="Change what fills this position"
+                    onClick={() => setSwapTarget({ kind: "slot", slotIndex: i, posIndex: j })}
+                  >
+                    {ritualLabel(r.ritualSlug)}
+                    <Pencil size={16} strokeWidth={1.75} className="!w-3 !h-3" style={{ opacity: 0.6 }} />
+                  </button>
                 ))}
               </div>
             </div>
@@ -152,7 +191,13 @@ export function SuggestCadenceModal({
               </div>
               {definition.standalone.map((s, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
-                  <span>{ritualLabel(s.ritualSlug)}</span>
+                  <button
+                    className="text-left underline decoration-dotted"
+                    title="Change what this is"
+                    onClick={() => setSwapTarget({ kind: "standalone", index: i })}
+                  >
+                    {ritualLabel(s.ritualSlug)}
+                  </button>
                   <span className="flex items-center gap-2" style={{ color: "var(--of-fg-subtle)" }}>
                     {offsetLabel(s.dayOffset)}
                     {s.spanWeeks ? ` (${s.spanWeeks}-week span)` : ""}
@@ -189,6 +234,8 @@ export function SuggestCadenceModal({
           </div>
         </div>
       )}
+
+      {swapTarget && <RitualPickerModal onSelect={applySwap} onClose={() => setSwapTarget(null)} />}
     </Modal>
   );
 }

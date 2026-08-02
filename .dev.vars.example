@@ -10,3 +10,9 @@ SESSION_SECRET=replace-me-with-a-long-random-string
 # Gates /api/admin/* (see worker/adminAuth.ts). Pick any password for local dev.
 # For production: npx wrangler secret put ADMIN_PASSWORD
 ADMIN_PASSWORD=replace-me-with-a-local-dev-password
+
+# Google sign-in (see worker/auth.ts). GOOGLE_CLIENT_ID already has a real,
+# public-safe value committed in wrangler.jsonc's "vars" — override here only
+# if you need a different OAuth client for local testing. Set this to "true"
+# to actually exercise sign-in locally; anonymous sessions are the default.
+AUTH_ENABLED=false

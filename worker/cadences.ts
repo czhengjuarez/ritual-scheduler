@@ -156,7 +156,7 @@ async function buildDefinitionFromPlan(
       const { slug, fallbackLabel } = resolveSlug(r.ritualId);
       return { position: r.position, ritualSlug: slug, label: r.label ?? fallbackLabel };
     });
-    return { name: slot.name, color: slot.color, freq: slot.freq as Freq, byweekday, nth, startTime: slot.startTime, durationMin: slot.durationMin, rotation };
+    return { name: slot.name, color: slot.color, freq: slot.freq as Freq, interval: slot.interval, byweekday, nth, startTime: slot.startTime, durationMin: slot.durationMin, rotation };
   });
 
   const defStandalone: CadenceStandaloneDef[] = standaloneRows.map((occ) => {
