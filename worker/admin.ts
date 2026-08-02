@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "./db";
 import { cadenceTemplates, categories, jobs, rituals } from "../db/schema";
+import { upsertCadenceEmbedding, upsertRitualEmbedding } from "./embeddings";
 import type { Env } from "./index";
 
 export const admin = new Hono<{ Bindings: Env }>();
@@ -28,6 +29,7 @@ admin.patch("/cadences/:id", async (c) => {
 
   const [row] = await db.update(cadenceTemplates).set(body).where(eq(cadenceTemplates.id, id)).returning();
   if (!row) return c.json({ error: "not found" }, 404);
+  c.executionCtx.waitUntil(upsertCadenceEmbedding(c.env, row));
   return c.json({ item: row });
 });
 
@@ -36,6 +38,9 @@ admin.post("/cadences/:id/approve", async (c) => {
   const db = getDb(c.env.DB);
   const [row] = await db.update(cadenceTemplates).set({ status: "published" }).where(eq(cadenceTemplates.id, id)).returning();
   if (!row) return c.json({ error: "not found" }, 404);
+  // This is usually the moment a cadence FIRST becomes searchable — it was
+  // sitting at status='pending' (not indexed) until now.
+  c.executionCtx.waitUntil(upsertCadenceEmbedding(c.env, row));
   return c.json({ item: row });
 });
 
@@ -44,6 +49,7 @@ admin.post("/cadences/:id/reject", async (c) => {
   const db = getDb(c.env.DB);
   const [row] = await db.update(cadenceTemplates).set({ status: "rejected" }).where(eq(cadenceTemplates.id, id)).returning();
   if (!row) return c.json({ error: "not found" }, 404);
+  c.executionCtx.waitUntil(upsertCadenceEmbedding(c.env, row)); // removes it from the index — no longer searchable
   return c.json({ item: row });
 });
 
@@ -99,6 +105,7 @@ admin.post("/rituals", async (c) => {
     })
     .returning();
 
+  c.executionCtx.waitUntil(upsertRitualEmbedding(c.env, row));
   return c.json({ item: row }, 201);
 });
 
@@ -127,6 +134,7 @@ admin.patch("/rituals/:id", async (c) => {
     .where(eq(rituals.id, id))
     .returning();
   if (!row) return c.json({ error: "not found" }, 404);
+  c.executionCtx.waitUntil(upsertRitualEmbedding(c.env, row));
   return c.json({ item: row });
 });
 
@@ -139,6 +147,7 @@ admin.post("/rituals/:id/approve", async (c) => {
     .where(eq(rituals.id, id))
     .returning();
   if (!row) return c.json({ error: "not found" }, 404);
+  c.executionCtx.waitUntil(upsertRitualEmbedding(c.env, row));
   return c.json({ item: row });
 });
 
@@ -151,6 +160,7 @@ admin.post("/rituals/:id/reject", async (c) => {
     .where(eq(rituals.id, id))
     .returning();
   if (!row) return c.json({ error: "not found" }, 404);
+  c.executionCtx.waitUntil(upsertRitualEmbedding(c.env, row));
   return c.json({ item: row });
 });
 
@@ -158,6 +168,7 @@ admin.delete("/rituals/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const db = getDb(c.env.DB);
   await db.delete(rituals).where(eq(rituals.id, id));
+  c.executionCtx.waitUntil(c.env.VECTORIZE.deleteByIds([`ritual:${id}`]).then(() => {}));
   return c.json({ success: true });
 });
 

@@ -110,8 +110,18 @@ export function useCreateRitual() {
     // The spam-timing/honeypot path (worker/library.ts) returns {ok:true}
     // with no ritual attached, on purpose — the type reflects that rather
     // than promising a ritual the caller can't actually rely on getting.
-    mutationFn: (body: { title: string; summary?: string; categoryId?: number; engagement?: string; durationMin?: number; load?: string; renderedAt: number; honeypot?: string }) =>
-      sendJSON<{ item: RitualDto } | { ok: true }>("/api/rituals", "POST", body),
+    mutationFn: (body: {
+      title: string;
+      summary?: string;
+      purpose?: string;
+      categoryId?: number;
+      engagement?: string;
+      durationMin?: number;
+      load?: string;
+      jobSlugs?: string[];
+      renderedAt: number;
+      honeypot?: string;
+    }) => sendJSON<{ item: RitualDto } | { ok: true }>("/api/rituals", "POST", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["rituals"] }),
   });
 }

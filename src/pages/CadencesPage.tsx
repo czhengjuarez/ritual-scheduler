@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Sparkles } from "lucide-react";
-import { cardClass, badgeClass, selectClass } from "@ops-forward/keel";
+import { Search, Sparkles } from "lucide-react";
+import { cardClass, badgeClass, selectClass, inputClass } from "@ops-forward/keel";
 import { useCadenceGallery } from "../hooks/useCadences";
 import { useJobs } from "../hooks/useLibrary";
+import { useCadenceSemanticSearch } from "../hooks/useSearch";
 import { Chip } from "../components/Chip";
 import { CadencePreviewModal } from "../planner/CadencePreviewModal";
 import type { CadenceTemplateDto } from "../hooks/useCadences";
@@ -24,6 +25,22 @@ const WORK_MODES = ["remote", "hybrid", "in-person"] as const;
 export function CadencesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<CadenceTemplateDto | null>(null);
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [smartMode, setSmartMode] = useState(false);
+  const [smartQuery, setSmartQuery] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Smart search costs an AI embedding call per query — debounce harder so
+  // we don't fire one on every keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setSmartQuery(search), 700);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const selectedJobs = useMemo(() => new Set((searchParams.get("job") ?? "").split(",").filter(Boolean)), [searchParams]);
   const workMode = searchParams.get("workMode") ?? "";
@@ -31,12 +48,18 @@ export function CadencesPage() {
   const durationMax = searchParams.get("durationMax") ?? undefined;
 
   const { data: jobsData } = useJobs();
-  const { data, isLoading } = useCadenceGallery({
+  const { data, isLoading: keywordLoading } = useCadenceGallery({
     job: selectedJobs.size ? [...selectedJobs].join(",") : undefined,
     workMode: workMode || undefined,
     durationMin: durationMin ? Number(durationMin) : undefined,
     durationMax: durationMax ? Number(durationMax) : undefined,
+    q: debouncedSearch || undefined,
   });
+  const { data: smartData, isFetching: smartLoading } = useCadenceSemanticSearch(smartQuery, smartMode);
+
+  const items = smartMode ? (smartData?.items.map((c) => c.item) ?? []) : (data?.items ?? []);
+  const isLoading = smartMode ? smartLoading : keywordLoading;
+  const showEmptyState = smartMode ? smartQuery.trim().length > 0 && !isLoading && items.length === 0 : !isLoading && items.length === 0;
 
   const toggleJob = (slug: string) => {
     const next = new Set(selectedJobs);
@@ -68,16 +91,47 @@ export function CadencesPage() {
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Chip active={selectedJobs.size === 0} onClick={clearJobs}>
+      <div className="flex items-center gap-2 max-w-lg">
+        <div className="relative flex-1">
+          <Search
+            size={20}
+            strokeWidth={1.75}
+            className="absolute left-3 top-1/2 -translate-y-1/2"
+            style={{ color: "var(--of-fg-subtle)" }}
+          />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={smartMode ? "Describe what you want…" : "Search cadences…"}
+            className={inputClass({ className: "pl-10 w-full" })}
+          />
+        </div>
+        <button
+          onClick={() => setSmartMode(!smartMode)}
+          title={smartMode ? "Smart search on — ranks by meaning, not keywords" : "Turn on Smart search (AI-ranked by meaning)"}
+          className="flex h-[38px] shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors"
+          style={{
+            background: smartMode ? "var(--of-bg-brand-tint)" : "var(--of-bg-recessed)",
+            color: smartMode ? "var(--of-fg-brand)" : "var(--of-fg-subtle)",
+            border: `1px solid ${smartMode ? "color-mix(in srgb, var(--of-magenta-400) 35%, transparent)" : "var(--of-border-line)"}`,
+          }}
+        >
+          <Sparkles size={16} strokeWidth={1.75} />
+          <span className="hidden sm:inline">Smart</span>
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2" style={{ opacity: smartMode ? 0.5 : 1 }}>
+        <Chip active={selectedJobs.size === 0} onClick={() => !smartMode && clearJobs()}>
           All jobs
         </Chip>
         {jobsData?.items.map((job) => (
-          <Chip key={job.slug} active={selectedJobs.has(job.slug)} onClick={() => toggleJob(job.slug)}>
+          <Chip key={job.slug} active={selectedJobs.has(job.slug)} onClick={() => !smartMode && toggleJob(job.slug)}>
             {job.name}
           </Chip>
         ))}
-        <select className={selectClass()} value={workMode} onChange={(e) => setWorkMode(e.target.value)}>
+        <select className={selectClass()} value={workMode} onChange={(e) => !smartMode && setWorkMode(e.target.value)} disabled={smartMode}>
           <option value="">Any work mode</option>
           {WORK_MODES.map((m) => (
             <option key={m} value={m}>
@@ -87,11 +141,31 @@ export function CadencesPage() {
         </select>
       </div>
 
-      {isLoading ? (
+      {smartMode && (
+        <div
+          className="flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm"
+          style={{
+            background: "var(--of-bg-brand-tint)",
+            borderColor: "color-mix(in srgb, var(--of-magenta-400) 30%, transparent)",
+            color: "var(--of-fg-brand)",
+          }}
+        >
+          <Sparkles size={16} strokeWidth={1.75} className="mt-0.5 shrink-0" />
+          <span>
+            <strong>Smart search</strong> ranks results by meaning rather than exact keyword matches — try
+            describing what you're after, e.g. "keeping a distributed team connected" or "onboarding new hires
+            fast". Job and work mode filters are off while it's on.
+          </span>
+        </div>
+      )}
+
+      {smartMode && !smartQuery.trim() ? (
+        <p style={{ color: "var(--of-fg-muted)" }}>Type something to search by meaning…</p>
+      ) : isLoading ? (
         <p style={{ color: "var(--of-fg-muted)" }}>Loading…</p>
-      ) : data && data.items.length > 0 ? (
+      ) : items.length > 0 ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data.items.map((cadence) => (
+          {items.map((cadence) => (
             <button key={cadence.id} onClick={() => setSelected(cadence)} className="text-left">
               <div className={cardClass({ className: "p-4 flex flex-col gap-3 h-full" })}>
                 <div className="flex items-start justify-between gap-2">
@@ -116,11 +190,13 @@ export function CadencesPage() {
             </button>
           ))}
         </div>
-      ) : (
+      ) : showEmptyState ? (
         <div className={cardClass({ className: "p-8 text-center" })}>
-          <p style={{ color: "var(--of-fg-muted)" }}>No cadences match those filters.</p>
+          <p style={{ color: "var(--of-fg-muted)" }}>
+            {smartMode ? "Nothing ranked closely enough — try rephrasing." : "No cadences match those filters."}
+          </p>
         </div>
-      )}
+      ) : null}
 
       {selected && <CadencePreviewModal cadence={selected} onClose={() => setSelected(null)} />}
     </div>

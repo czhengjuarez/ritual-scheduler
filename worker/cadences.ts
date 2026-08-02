@@ -6,17 +6,16 @@ import {
   cadenceTemplates,
   jobs,
   occurrences,
-  plans,
   rituals,
   rotationItems,
   slots,
   type CadenceDefinition,
   type CadenceRotationItemDef,
   type CadenceStandaloneDef,
-  type Slot,
 } from "../db/schema";
-import { addDaysISO, daysBetweenISO, derivePattern, firstMatchingDate, type Freq } from "./schedule";
-import { getOwnedPlan, materializeSlotOccurrences } from "./planner";
+import { daysBetweenISO, derivePattern, type Freq } from "./schedule";
+import { getOwnedPlan } from "./planner";
+import { instantiatePlanFromDefinition } from "./cadenceInstantiate";
 import type { Env } from "./index";
 
 type Session = { userId: string; teamId: string };
@@ -213,16 +212,6 @@ cadences.post("/plans/:planId/publish", async (c) => {
 
 // ─── Clone: template -> plan ────────────────────────────────────────────────
 
-async function resolveRitualId(db: Db, slugOrNull: string | null, teamId: string): Promise<number | null> {
-  if (!slugOrNull) return null;
-  const [ritual] = await db
-    .select({ id: rituals.id })
-    .from(rituals)
-    .where(and(eq(rituals.slug, slugOrNull), eq(rituals.status, "published"), or(eq(rituals.visibility, "public"), eq(rituals.ownerTeamId, teamId))))
-    .limit(1);
-  return ritual?.id ?? null;
-}
-
 cadences.post("/cadences/:id/clone", async (c) => {
   const session = c.get("session");
   const db = getDb(c.env.DB);
@@ -238,73 +227,16 @@ cadences.post("/cadences/:id/clone", async (c) => {
   const body = await c.req.json<{ startDate?: string; name?: string; timezone?: string }>().catch(() => ({}) as Record<string, never>);
   if (!body.startDate) return c.json({ error: "startDate is required" }, 400);
 
-  const startDate = body.startDate;
-  const endDate = addDaysISO(startDate, template.durationWeeks * 7 - 1);
-  const planId = crypto.randomUUID();
-
-  await db.insert(plans).values({
-    id: planId,
+  const plan = await instantiatePlanFromDefinition(db, {
     teamId: session.teamId,
+    userId: session.userId,
+    definition: template.definition,
+    startDate: body.startDate,
+    durationWeeks: template.durationWeeks,
     name: body.name?.trim() || template.name,
-    startDate,
-    endDate,
-    timezone: body.timezone ?? "UTC",
+    timezone: body.timezone,
     fromTemplateId: template.id,
-    createdBy: session.userId,
-    icsToken: crypto.randomUUID(),
   });
-  const [plan] = await db.select().from(plans).where(eq(plans.id, planId)).limit(1);
-
-  const definition = template.definition;
-
-  for (const slotDef of definition.slots) {
-    // The anchor is reconstructed from the portable (byweekday, nth) pattern
-    // — the exact inverse of derivePattern(), which is what publish used to
-    // create this pattern in the first place.
-    const anchorDate = firstMatchingDate(slotDef.freq, slotDef.byweekday, slotDef.nth, startDate);
-    const slot: Slot = {
-      id: crypto.randomUUID(),
-      planId,
-      name: slotDef.name,
-      color: slotDef.color ?? null,
-      freq: slotDef.freq,
-      byweekday: slotDef.byweekday,
-      nth: slotDef.nth ?? null,
-      startTime: slotDef.startTime ?? null,
-      durationMin: slotDef.durationMin ?? null,
-      cycleLength: slotDef.rotation.length,
-      anchorDate,
-      activeFrom: null,
-      activeTo: null,
-      createdAt: "",
-    };
-    await db.insert(slots).values(slot);
-
-    const rotationRows = [];
-    for (const item of slotDef.rotation) {
-      rotationRows.push({ slotId: slot.id, position: item.position, ritualId: await resolveRitualId(db, item.ritualSlug, session.teamId), label: item.label ?? null });
-    }
-    if (rotationRows.length) await db.insert(rotationItems).values(rotationRows);
-    const insertedRotation = await db.select().from(rotationItems).where(eq(rotationItems.slotId, slot.id)).orderBy(asc(rotationItems.position));
-
-    await materializeSlotOccurrences(db, plan, slot, insertedRotation, startDate, endDate);
-  }
-
-  for (const item of definition.standalone) {
-    const date = addDaysISO(startDate, item.dayOffset);
-    const ritualId = await resolveRitualId(db, item.ritualSlug, session.teamId);
-    await db.insert(occurrences).values({
-      id: crypto.randomUUID(),
-      planId,
-      slotId: null,
-      ritualId,
-      date,
-      endDate: item.spanWeeks ? addDaysISO(date, item.spanWeeks * 7 - 1) : null,
-      titleOverride: item.titleOverride ?? null,
-      status: "planned",
-      origin: "template",
-    });
-  }
 
   await db.update(cadenceTemplates).set({ cloneCount: template.cloneCount + 1 }).where(eq(cadenceTemplates.id, template.id));
 

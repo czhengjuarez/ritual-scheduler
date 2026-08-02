@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Search, Plus } from "lucide-react";
-import { inputClass, badgeClass, buttonClass, selectClass, labelClass } from "@ops-forward/keel";
+import { Search, Plus, Sparkles } from "lucide-react";
+import { inputClass, badgeClass, buttonClass, selectClass, labelClass, textareaClass } from "@ops-forward/keel";
 import { Modal } from "../components/Modal";
-import { useRituals, useCategories, useCreateRitual } from "../hooks/useLibrary";
+import { useRituals, useCategories, useCreateRitual, useJobs } from "../hooks/useLibrary";
+import { useAutofill } from "../hooks/useAi";
+import { Chip } from "../components/Chip";
 import type { RitualDto } from "../hooks/useLibrary";
 
 /**
@@ -16,20 +18,46 @@ export function RitualPickerModal({ onSelect, onClose }: { onSelect: (ritual: Ri
   const [showCreate, setShowCreate] = useState(false);
   const [categoryId, setCategoryId] = useState<number | "">("");
   const [load, setLoad] = useState<"light" | "medium" | "heavy">("medium");
+  const [summary, setSummary] = useState("");
+  const [notes, setNotes] = useState("");
+  const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
   // Captured once at mount, not at submit — this is what the spam-timing
   // check on the server actually measures (PLAN.md §5.5).
   const [renderedAt] = useState(() => Date.now());
 
   const { data, isLoading } = useRituals({ q: q || undefined });
   const { data: categoriesData } = useCategories();
+  const { data: jobsData } = useJobs();
   const createRitual = useCreateRitual();
+  const autofill = useAutofill();
 
   const exactMatch = data?.items.some((r) => r.title.toLowerCase() === q.trim().toLowerCase());
+
+  const runAutofill = () => {
+    if (!notes.trim()) return;
+    autofill.mutate(`${q.trim()}\n${notes.trim()}`, {
+      onSuccess: ({ draft }) => {
+        setSummary(draft.summary ?? "");
+        if (draft.load) setLoad(draft.load);
+        const cat = categoriesData?.items.find((c) => c.slug === draft.categorySlug);
+        if (cat) setCategoryId(cat.id);
+        setSelectedJobs(new Set(draft.jobSlugs));
+      },
+    });
+  };
+
+  const toggleJob = (slug: string) => {
+    setSelectedJobs((prev) => {
+      const next = new Set(prev);
+      next.has(slug) ? next.delete(slug) : next.add(slug);
+      return next;
+    });
+  };
 
   const submitNew = () => {
     if (!q.trim()) return;
     createRitual.mutate(
-      { title: q.trim(), categoryId: categoryId || undefined, load, renderedAt },
+      { title: q.trim(), summary: summary.trim() || undefined, categoryId: categoryId || undefined, load, jobSlugs: [...selectedJobs], renderedAt },
       { onSuccess: (result) => "item" in result && onSelect(result.item) },
     );
   };
@@ -101,6 +129,32 @@ export function RitualPickerModal({ onSelect, onClose }: { onSelect: (ritual: Ri
                   Lands in your team's library right away — no approval needed. Publishing it publicly is a separate,
                   optional step from the Library page.
                 </p>
+
+                <div>
+                  <label className={labelClass()}>Paste notes, a URL, or a description (optional)</label>
+                  <textarea
+                    className={textareaClass({ className: "w-full" })}
+                    rows={2}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Paste anything about this ritual — AI drafts the fields below from it"
+                  />
+                  <button
+                    className={buttonClass({ variant: "secondary", size: "sm", className: "mt-1.5" })}
+                    onClick={runAutofill}
+                    disabled={!notes.trim() || autofill.isPending}
+                  >
+                    <Sparkles size={16} strokeWidth={1.75} style={{ color: "var(--of-fg-brand)" }} />
+                    {autofill.isPending ? "Drafting…" : "Autofill from this"}
+                  </button>
+                  {autofill.isError && <p className="text-xs mt-1" style={{ color: "var(--of-fg-danger)" }}>Couldn't draft from that — fill in the fields below instead.</p>}
+                </div>
+
+                <div>
+                  <label className={labelClass()}>Summary</label>
+                  <textarea className={textareaClass({ className: "w-full" })} rows={2} value={summary} onChange={(e) => setSummary(e.target.value)} />
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className={labelClass()}>Category</label>
@@ -122,6 +176,18 @@ export function RitualPickerModal({ onSelect, onClose }: { onSelect: (ritual: Ri
                     </select>
                   </div>
                 </div>
+
+                <div>
+                  <label className={labelClass()}>Jobs this serves</label>
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    {jobsData?.items.map((job) => (
+                      <Chip key={job.slug} active={selectedJobs.has(job.slug)} onClick={() => toggleJob(job.slug)}>
+                        {job.name}
+                      </Chip>
+                    ))}
+                  </div>
+                </div>
+
                 <button className={buttonClass({ variant: "primary", size: "sm" })} onClick={submitNew} disabled={createRitual.isPending}>
                   {createRitual.isPending ? "Creating…" : "Create & use it"}
                 </button>

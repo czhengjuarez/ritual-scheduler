@@ -512,19 +512,14 @@ planner.get("/occurrences/:id/ics", async (c) => {
 // ─── Warnings ───────────────────────────────────────────────────────────────
 // Rules, not AI — cheap and instant (PLAN.md §5.1).
 
-interface Warning {
+export interface Warning {
   type: "min_gap" | "avoid_near" | "heavy_cluster" | "prep_lead";
   severity: "warning" | "info";
   message: string;
   occurrenceIds: string[];
 }
 
-planner.get("/plans/:planId/warnings", async (c) => {
-  const session = c.get("session");
-  const db = getDb(c.env.DB);
-  const plan = await getOwnedPlan(db, c.req.param("planId"), session.teamId);
-  if (!plan) return c.json({ error: "not found" }, 404);
-
+export async function computePlanWarnings(db: Db, plan: Plan): Promise<Warning[]> {
   const rows = await db
     .select({ occurrence: occurrences, ritual: rituals })
     .from(occurrences)
@@ -609,5 +604,15 @@ planner.get("/plans/:planId/warnings", async (c) => {
     }
   }
 
-  return c.json({ items: warnings });
+  return warnings;
+}
+
+planner.get("/plans/:planId/warnings", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const plan = await getOwnedPlan(db, c.req.param("planId"), session.teamId);
+  if (!plan) return c.json({ error: "not found" }, 404);
+
+  const items = await computePlanWarnings(db, plan);
+  return c.json({ items });
 });

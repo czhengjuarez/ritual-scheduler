@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Sparkles } from "lucide-react";
 import { buttonClass, cardClass, inputClass, selectClass, labelClass } from "@ops-forward/keel";
 import { useJobs } from "../hooks/useLibrary";
 import { Chip } from "../components/Chip";
+import { SuggestCadenceModal } from "./SuggestCadenceModal";
 
 type Horizon = "week" | "quarter" | "year" | "any";
 
@@ -26,6 +27,7 @@ export function JobPicker() {
   const [teamSize, setTeamSize] = useState("");
   const [workMode, setWorkMode] = useState("");
   const [horizon, setHorizon] = useState<Horizon>("any");
+  const [showSuggest, setShowSuggest] = useState(false);
   const { data: jobsData } = useJobs();
   const navigate = useNavigate();
 
@@ -95,6 +97,20 @@ export function JobPicker() {
       <button className={buttonClass({ variant: "primary" })} onClick={seeMatches}>
         See matching cadences <ArrowRight size={20} strokeWidth={1.75} className="!w-4 !h-4" />
       </button>
+
+      <button className={buttonClass({ variant: "secondary" })} disabled={selectedJobs.size === 0} onClick={() => setShowSuggest(true)} title={selectedJobs.size === 0 ? "Pick at least one job first" : undefined}>
+        <Sparkles size={20} strokeWidth={1.75} className="!w-4 !h-4" style={{ color: "var(--of-fg-brand)" }} /> Or let AI design one for you
+      </button>
+
+      {showSuggest && (
+        <SuggestCadenceModal
+          initialJobs={[...selectedJobs]}
+          teamSize={teamSize || undefined}
+          workMode={workMode || undefined}
+          horizonWeeks={HORIZON_RANGES[horizon].min ?? 12}
+          onClose={() => setShowSuggest(false)}
+        />
+      )}
     </div>
   );
 }

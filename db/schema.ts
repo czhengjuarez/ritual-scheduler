@@ -399,3 +399,30 @@ export const cadenceJobs = sqliteTable(
 export type CadenceTemplate = typeof cadenceTemplates.$inferSelect;
 export type NewCadenceTemplate = typeof cadenceTemplates.$inferInsert;
 export type CadenceJob = typeof cadenceJobs.$inferSelect;
+
+// ---------------------------------------------------------------------------
+// Phase 6: AI. Every generation call is logged here — it's both the audit
+// trail PLAN.md §5.6 asks for ("every run logged to ai_runs") and the
+// rate-limit ledger (worker/ai.ts counts a team's recent rows instead of
+// needing a separate KV binding just for that).
+// ---------------------------------------------------------------------------
+
+export const aiRuns = sqliteTable(
+  "ai_runs",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    teamId: text("team_id").notNull().references(() => teams.id, { onDelete: "cascade" }),
+    planId: text("plan_id").references(() => plans.id, { onDelete: "set null" }),
+    kind: text("kind").notNull(), // suggest|balance|remix|autofill
+    input: text("input", { mode: "json" }).notNull(),
+    output: text("output", { mode: "json" }),
+    // null = not yet decided, true = accepted/used, false = discarded.
+    // Nothing AI-generated reaches the public gallery without this being true.
+    accepted: integer("accepted", { mode: "boolean" }),
+    createdAt: text("created_at").notNull().default(sql`(current_timestamp)`),
+  },
+  (t) => [index("ai_runs_team_kind_idx").on(t.teamId, t.kind, t.createdAt)],
+);
+
+export type AiRun = typeof aiRuns.$inferSelect;
+export type NewAiRun = typeof aiRuns.$inferInsert;

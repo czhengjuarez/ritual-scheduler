@@ -16,6 +16,7 @@ import { cadences } from "./cadences";
 import { ics } from "./ics";
 import { admin } from "./admin";
 import { adminAuth, adminAuthRoutes } from "./adminAuth";
+import { ai, aiAdmin } from "./ai";
 
 export interface Env {
   DB: D1Database;
@@ -24,11 +25,11 @@ export interface Env {
   ASSETS?: Fetcher;
   SESSION_SECRET: string;
   ADMIN_PASSWORD?: string;
+  AI: Ai;
+  VECTORIZE: VectorizeIndex;
 
   // Later phases:
   // MEDIA: R2Bucket;                 -- Phase 8: covers, attachments, exports
-  // AI: Ai;                          -- Phase 6: embeddings, suggestions
-  // VECTORIZE: VectorizeIndex;       -- Phase 6: semantic search
   // GOOGLE_CLIENT_ID: string;        -- Phase 6: Google sign-in (module ported
   //                                     from TeamRitualAudit/src/auth/)
 }
@@ -84,6 +85,7 @@ app.get("/api/session", async (c) => {
 app.route("/api", library);
 app.route("/api", planner);
 app.route("/api", cadences);
+app.route("/api", ai);
 
 // Admin: password-gated (PLAN.md §7 — Cloudflare Access needs a custom
 // domain this project doesn't have). Login/logout/session stay ungated;
@@ -91,6 +93,7 @@ app.route("/api", cadences);
 app.route("/api/admin-auth", adminAuthRoutes);
 app.use("/api/admin/*", adminAuth);
 app.route("/api/admin", admin);
+app.route("/api/admin", aiAdmin);
 
 // Public — outside /api on purpose, so it never hits the session middleware
 // above. Calendar apps poll this with no cookie; the token in the URL is the

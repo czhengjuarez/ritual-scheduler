@@ -145,10 +145,12 @@ library.post("/rituals", async (c) => {
     .req.json<{
       title?: string;
       summary?: string;
+      purpose?: string;
       categoryId?: number;
       engagement?: string;
       durationMin?: number;
       load?: string;
+      jobSlugs?: string[];
       honeypot?: string;
       renderedAt?: number;
     }>()
@@ -175,6 +177,7 @@ library.post("/rituals", async (c) => {
       slug: `${slug}-${crypto.randomUUID().slice(0, 6)}`,
       title,
       summary: body.summary?.trim() || null,
+      purpose: body.purpose?.trim() || null,
       categoryId: body.categoryId ?? null,
       engagement,
       durationMin: body.durationMin ?? null,
@@ -185,6 +188,11 @@ library.post("/rituals", async (c) => {
       createdBy: session.userId,
     })
     .returning();
+
+  if (body.jobSlugs?.length) {
+    const matchedJobs = await db.select({ id: jobs.id }).from(jobs).where(inArray(jobs.slug, body.jobSlugs));
+    if (matchedJobs.length) await db.insert(ritualJobs).values(matchedJobs.map((j) => ({ ritualId: item.id, jobId: j.id, weight: 1 })));
+  }
 
   return c.json({ item }, 201);
 });

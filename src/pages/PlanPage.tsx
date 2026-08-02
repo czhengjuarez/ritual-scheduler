@@ -7,6 +7,7 @@ import { CreatePlanForm } from "../planner/CreatePlanForm";
 import { CycleEditorModal } from "../planner/CycleEditorModal";
 import { OccurrenceDrawer } from "../planner/OccurrenceDrawer";
 import { WarningsPanel } from "../planner/WarningsPanel";
+import { BalancePanel } from "../planner/BalancePanel";
 import { MonthCalendar } from "../planner/MonthCalendar";
 import { CampaignBanner } from "../planner/CampaignBanner";
 import { YearGrid } from "../planner/YearGrid";
@@ -81,6 +82,7 @@ export function PlanPage() {
       </div>
 
       <WarningsPanel planId={plan.id} />
+      <BalancePanel planId={plan.id} />
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1" style={{ visibility: view === "year" ? "hidden" : "visible" }}>

@@ -20,9 +20,14 @@
       "database_id": "b847296c-13e8-4973-9eea-5765831b4410",
       "migrations_dir": "db/migrations"
     }
-  ]
+  ],
+  // Phase 6: embeddings (rituals + cadences share one index, distinguished by
+  // a "type" metadata field) and cadence suggestion / balance / remix /
+  // autofill. No local simulator for either binding — AI always proxies to
+  // the real service regardless of this config; Vectorize needs remote:true
+  // to do the same under `vite dev` (see worker/embeddings.ts).
+  "ai": { "binding": "AI" },
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "ritual-builder-embeddings", "remote": true }]
   // Later phases (see PLAN.md §2, §8):
   // "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "ritual-builder-assets" }]
-  // "ai": { "binding": "AI" }
-  // "vectorize": [{ "binding": "VECTORIZE", "index_name": "ritual-builder-embeddings", "remote": true }]
 }
