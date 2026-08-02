@@ -145,6 +145,12 @@ function buildConverseTool(jobSlugsAllowed: string[]) {
             description:
               "Short labels for distinct themes/topics that should rotate through ONE recurring slot — set this when they list several named things ('alignment, product showcase, creative jam, learning') or ask to grow the variety ('a few more types in the rotation', 'add another one'). Cumulative across the conversation, like jobSlugs. Leave empty for a single-theme ask.",
           },
+          excludeThemes: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Short labels for specific slots/items they explicitly asked to remove or drop from what you already proposed (e.g. 'remove the monthly team pulse', 'drop the retro', 'the weekly sync is plenty' after a multi-item proposal). Cumulative across the conversation — once dropped, stays dropped unless they explicitly ask for it back. This is a hard exclusion, not a preference: never regenerate something matching an excluded label even if it seems like a good fit.",
+          },
           destination: {
             type: "string",
             enum: CONVERSE_ROUTES,
@@ -176,11 +182,18 @@ interface ConverseResult {
   destination: ConverseRoute | null;
   wantsMultiple: boolean;
   rotationThemes: string[];
+  excludeThemes: string[];
+}
+
+function sanitizeStringArray(raw: unknown): string[] {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    .map((s) => s.trim())
+    .slice(0, 8);
 }
 
 function sanitizeConverseResult(raw: Record<string, unknown>, validJobSlugs: Set<string>): ConverseResult {
   const jobSlugsRaw = Array.isArray(raw.jobSlugs) ? (raw.jobSlugs as unknown[]) : [];
-  const rotationThemesRaw = Array.isArray(raw.rotationThemes) ? (raw.rotationThemes as unknown[]) : [];
   const action: ConverseAction = (CONVERSE_ACTIONS as readonly string[]).includes(raw.action as string) ? (raw.action as ConverseAction) : "ask";
   return {
     action,
@@ -191,10 +204,8 @@ function sanitizeConverseResult(raw: Record<string, unknown>, validJobSlugs: Set
     horizonWeeks: typeof raw.horizonWeeks === "number" && raw.horizonWeeks > 0 ? Math.min(52, Math.round(raw.horizonWeeks)) : null,
     destination: action === "route" && (CONVERSE_ROUTES as readonly string[]).includes(raw.destination as string) ? (raw.destination as ConverseRoute) : null,
     wantsMultiple: raw.wantsMultiple === true,
-    rotationThemes: rotationThemesRaw
-      .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
-      .map((s) => s.trim())
-      .slice(0, 8),
+    rotationThemes: sanitizeStringArray(raw.rotationThemes),
+    excludeThemes: sanitizeStringArray(raw.excludeThemes),
   };
 }
 
@@ -403,7 +414,8 @@ ai.post("/intent/converse", async (c) => {
     "The moment you have at least one job and a team size, whether given all at once or gathered turn by turn, set action='propose' with a short 1-2 sentence summary of what you're about to build and ask them to confirm.",
     "Default to wantsMultiple=false — one focused recurring activity, which is what most asks actually want. Only set it true when they explicitly ask for more than one: 'more events', 'a few different meetings', 'not just X', pushing back on a single-item proposal, or naming two or more distinct activities themselves. Your own summary message must match this exactly — if wantsMultiple is false, don't describe multiple activities in the message (that's a promise the proposal won't keep); if true, the message should describe more than one.",
     "If the very first message is clearly not about building a cadence at all — they want their existing calendar, an audit, or an entirely blank plan with no specifics — set action='route' instead, and you MUST also set destination to the matching one of plan/ritual/calendar/audit. Never set action='route' without also setting destination, and never phrase a route's message as a question — routing happens immediately, the user won't get a chance to answer.",
-    "Always carry forward every fact already established earlier in the conversation into jobSlugs/teamSize/workMode/horizonWeeks/wantsMultiple, even on turns where you're asking or talking about something else — never drop a fact once given.",
+    "After you've already proposed something, they may reply asking to change it — 'remove the monthly team pulse', 'drop the retro', 'the weekly sync is plenty' (implicitly dropping whatever else was in a multi-item proposal). Put a short label for whatever they're dropping into excludeThemes and keep action='propose' so you regenerate — do NOT just repeat your previous message unchanged, and do NOT treat this as a brand new ask that forgets the job/teamSize/rotationThemes already established. Your new message must actually acknowledge the change (e.g. 'Just the weekly sync then — confirm?'), not restate the old summary verbatim.",
+    "Always carry forward every fact already established earlier in the conversation into jobSlugs/teamSize/workMode/horizonWeeks/wantsMultiple/rotationThemes/excludeThemes, even on turns where you're asking or talking about something else — never drop a fact once given.",
   ].join(" ");
 
   let result: ChatToolResult;
@@ -499,6 +511,7 @@ ai.post("/intent/converse", async (c) => {
     // turns are just filling in team size etc. and would only dilute this.
     focusText: userTurns[0]?.content,
     rotationThemes: parsed.rotationThemes,
+    excludeThemes: parsed.excludeThemes,
   });
 
   if (!outcome.ok) {
@@ -618,6 +631,15 @@ interface SuggestCadenceBody {
    * slot's rotation gets exactly one item per theme.
    */
   rotationThemes?: string[];
+  /**
+   * Things explicitly asked to be dropped from an earlier proposal in this
+   * conversation ("remove the monthly team pulse") — a hard exclusion, not
+   * a preference. Enforced both in the generation prompt and by a
+   * server-side filter afterward (never trust the model alone), since
+   * verified live: without any memory of what to exclude, a follow-up
+   * "remove X" just regenerated from scratch and silently kept X anyway.
+   */
+  excludeThemes?: string[];
 }
 
 function buildCadenceTool() {
@@ -752,6 +774,7 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
   // alone would wash out. Job names still ride along as secondary
   // grounding, not the primary signal.
   const rotationThemes = body.rotationThemes ?? [];
+  const excludeThemes = body.excludeThemes ?? [];
   const retrievalQuery = body.focusText
     ? `${[body.focusText, ...rotationThemes].join(". ")}. Serves: ${jobRows.map((j) => j.name).join(", ")}`
     : jobRows.map((j) => [j.name, j.description].filter(Boolean).join(" — ")).join(". ");
@@ -786,6 +809,7 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
   const contextLines = [
     body.focusText ? `The user specifically asked for: "${body.focusText}"` : null,
     rotationThemes.length ? `They named these specific rotation themes, in order: ${rotationThemes.map((t) => `"${t}"`).join(", ")}` : null,
+    excludeThemes.length ? `They explicitly asked to REMOVE/EXCLUDE: ${excludeThemes.map((t) => `"${t}"`).join(", ")} — never include anything matching these.` : null,
     `Jobs to serve: ${jobRows.map((j) => j.name).join(", ")}`,
     body.teamSizeMin || body.teamSizeMax ? `Team size: ${body.teamSizeMin ?? "?"}-${body.teamSizeMax ?? "?"}` : null,
     body.workMode ? `Work mode: ${body.workMode}` : null,
@@ -811,6 +835,9 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
       : "") +
     (rotationThemes.length
       ? ` They named ${rotationThemes.length} specific rotation themes (listed above) — build exactly ONE slot whose rotation array has exactly ${rotationThemes.length} positions, one per theme, in the order given. For each position: use the closest matching candidate ritualSlug if one is a genuine fit for that specific theme; otherwise omit ritualSlug and set label to that theme's name instead (e.g. label: "Creative Jam") rather than forcing a mismatched candidate or dropping the theme. Never merge two named themes into one position, and never add extra positions beyond the ${rotationThemes.length} named.`
+      : "") +
+    (excludeThemes.length
+      ? ` They explicitly asked to remove ${excludeThemes.map((t) => `"${t}"`).join(" and ")} from what was previously proposed — this is a hard exclusion. Do not include any slot, standalone item, or rotation position whose name or theme matches any of these, even if it otherwise fits well. If excluding it leaves only one item, that is the correct, expected result — do not backfill with something else to compensate.`
       : "");
 
   const userPrompt = `${contextLines.join("\n")}\n\nCandidate rituals (use only these slugs):\n${candidateLines}\n\nPropose a cadence for this team.`;
@@ -852,6 +879,36 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
   // discipline as elsewhere in this file.
   if (focused) {
     definition = { slots: definition.slots.slice(0, 2), standalone: definition.standalone.slice(0, 1) };
+  }
+
+  // Same discipline for excludeThemes: strip anything matching a requested
+  // removal even if the model included it anyway. Renumber remaining
+  // rotation positions afterward — they must stay 0..N-1 with no gaps, or
+  // worker/schedule.ts's `position % cycleLength` rotation math breaks.
+  if (excludeThemes.length) {
+    const candidateTitleBySlug = new Map(candidateRows.map((r) => [r.slug, r.title]));
+    const matchesExclude = (label: string | null | undefined): boolean => {
+      if (!label) return false;
+      const lower = label.toLowerCase();
+      return excludeThemes.some((theme) => {
+        const t = theme.toLowerCase();
+        return lower.includes(t) || t.includes(lower);
+      });
+    };
+    definition = {
+      slots: definition.slots
+        .map((s) => ({
+          ...s,
+          rotation: s.rotation
+            .filter((r) => !matchesExclude(r.label) && !matchesExclude(r.ritualSlug ? candidateTitleBySlug.get(r.ritualSlug) : null))
+            .map((r, i) => ({ ...r, position: i })),
+        }))
+        .filter((s) => s.rotation.length > 0 && !matchesExclude(s.name)),
+      standalone: definition.standalone.filter((o) => !matchesExclude(o.ritualSlug ? candidateTitleBySlug.get(o.ritualSlug) : null)),
+    };
+    if (definition.slots.length === 0 && definition.standalone.length === 0) {
+      return { ok: false, status: 502, error: "excluding everything requested left nothing to propose — try describing what you do want" };
+    }
   }
 
   const run = await logRun(db, { teamId, kind: "suggest", input: body, output: definition });
