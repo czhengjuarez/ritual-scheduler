@@ -134,6 +134,17 @@ function buildConverseTool(jobSlugsAllowed: string[]) {
           teamSize: { type: "integer" },
           workMode: { type: "string", enum: ["remote", "hybrid", "in-person"] },
           horizonWeeks: { type: "integer", description: "plan length in weeks; default to 12 if never mentioned" },
+          wantsMultiple: {
+            type: "boolean",
+            description:
+              "true once they've asked for more than one distinct recurring event on its own separate cadence — 'more events', 'a few different meetings', 'not just one thing' — rather than a single specific thing. This is NOT the same as naming several rotation themes for one slot (see rotationThemes) — a weekly slot rotating through 4 themes is still ONE event, so wantsMultiple stays false for that. Defaults to false. Once true, stays true for the rest of the conversation.",
+          },
+          rotationThemes: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Short labels for distinct themes/topics that should rotate through ONE recurring slot — set this when they list several named things ('alignment, product showcase, creative jam, learning') or ask to grow the variety ('a few more types in the rotation', 'add another one'). Cumulative across the conversation, like jobSlugs. Leave empty for a single-theme ask.",
+          },
           destination: {
             type: "string",
             enum: CONVERSE_ROUTES,
@@ -163,10 +174,13 @@ interface ConverseResult {
   workMode: "remote" | "hybrid" | "in-person" | null;
   horizonWeeks: number | null;
   destination: ConverseRoute | null;
+  wantsMultiple: boolean;
+  rotationThemes: string[];
 }
 
 function sanitizeConverseResult(raw: Record<string, unknown>, validJobSlugs: Set<string>): ConverseResult {
   const jobSlugsRaw = Array.isArray(raw.jobSlugs) ? (raw.jobSlugs as unknown[]) : [];
+  const rotationThemesRaw = Array.isArray(raw.rotationThemes) ? (raw.rotationThemes as unknown[]) : [];
   const action: ConverseAction = (CONVERSE_ACTIONS as readonly string[]).includes(raw.action as string) ? (raw.action as ConverseAction) : "ask";
   return {
     action,
@@ -176,7 +190,43 @@ function sanitizeConverseResult(raw: Record<string, unknown>, validJobSlugs: Set
     workMode: raw.workMode === "remote" || raw.workMode === "hybrid" || raw.workMode === "in-person" ? raw.workMode : null,
     horizonWeeks: typeof raw.horizonWeeks === "number" && raw.horizonWeeks > 0 ? Math.min(52, Math.round(raw.horizonWeeks)) : null,
     destination: action === "route" && (CONVERSE_ROUTES as readonly string[]).includes(raw.destination as string) ? (raw.destination as ConverseRoute) : null,
+    wantsMultiple: raw.wantsMultiple === true,
+    rotationThemes: rotationThemesRaw
+      .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      .map((s) => s.trim())
+      .slice(0, 8),
   };
+}
+
+const JOB_MATCH_STOPWORDS = new Set(["our", "the", "and", "for", "get", "make", "our", "new", "well", "with", "run", "cut", "a"]);
+
+/**
+ * Deterministic fallback for when the model's own `jobSlugs` comes back
+ * empty despite the user plainly having described what they want — verified
+ * live: a plain description like "alignment, product showcase, creative
+ * jam, learning" repeatedly produced jobSlugs=[] turn after turn, even
+ * though the model's own message text showed it understood. Since
+ * `jobSlugs.length === 0` is exactly what triggers the "which job does this
+ * serve?" reprompt below, that failure mode is an infinite identical-
+ * question loop with no escape — the same "don't trust the model's
+ * structured output alone" discipline as ONE_ON_ONE_PATTERN, applied here
+ * via a crude prefix-stem overlap against each job's own name (handles
+ * "alignment"/"aligned", "learning"/"learn" etc. sharing a root without
+ * matching as an exact substring).
+ */
+function matchJobSlugsFromText(text: string, jobRows: { slug: string; name: string }[]): string[] {
+  const lower = text.toLowerCase();
+  const words = lower.split(/[^a-z]+/).filter((w) => w.length > 3 && !JOB_MATCH_STOPWORDS.has(w));
+  const stems = words.map((w) => w.slice(0, 5));
+  const matched: string[] = [];
+  for (const job of jobRows) {
+    const jobWords = job.name
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .filter((w) => w.length > 3 && !JOB_MATCH_STOPWORDS.has(w));
+    if (jobWords.some((jw) => stems.includes(jw.slice(0, 5)))) matched.push(job.slug);
+  }
+  return matched;
 }
 
 const SINGLE_RITUAL_SLOT_FREQ: Record<string, "weekly" | "biweekly" | "monthly"> = {
@@ -209,6 +259,17 @@ const SINGLE_RITUAL_SLOT_FREQ: Record<string, "weekly" | "biweekly" | "monthly">
 // doesn't. Text match is more reliable than vector similarity for this one
 // specific, extremely common shorthand.
 const ONE_ON_ONE_PATTERN = /\b1[\s:-]?on[\s:-]?1\b|\b1:1\b|\bone[\s-]?on[\s-]?one\b/i;
+
+/**
+ * Same "text match beats trusting the model" reasoning as ONE_ON_ONE_PATTERN
+ * above, for a different field: `wantsMultiple` on the `respond` tool is
+ * unreliable in practice — glm-4.7-flash's own message text correctly says
+ * "you want a few different recurring events" while it leaves the boolean
+ * false, which would otherwise silently keep generation capped at one slot.
+ * ORed with the model's own flag rather than replacing it, so either signal
+ * can flip this on.
+ */
+const WANTS_MULTIPLE_PATTERN = /\bmore events?\b|\bmultiple\b|\bseveral\b|\ba few different\b|\bnot just\b|\bmore than one\b|\bdifferent (meetings|events|rituals|activities)\b/i;
 
 async function findSingleRitualMatch(env: Env, db: Db, text: string) {
   if (ONE_ON_ONE_PATTERN.test(text)) {
@@ -260,11 +321,18 @@ ai.post("/intent/converse", async (c) => {
   // a job/team-size for something that's already a known, fully-specified
   // ritual. Skipping the model call entirely here is both more reliable and
   // cheaper than trying to prompt-engineer around that inconsistency.
-  const conversationText = history
-    .filter((m) => m.role === "user")
-    .map((m) => m.content)
-    .join(" ");
-  const singleMatch = await findSingleRitualMatch(c.env, db, conversationText);
+  //
+  // Only checked on the very first user turn. It used to re-run every turn
+  // against the *whole* accumulated conversation, which meant a match found
+  // on turn 1 kept winning forever — a "no, something else" reply on turn 2
+  // never reached the model at all, because this short-circuit fired first
+  // and returned the exact same suggestion again. Once the user starts
+  // iterating, the full conversational model (which sees the prior
+  // suggestion and the rejection in its own message history) is what should
+  // be reacting, not a stateless re-match of everything said so far.
+  const userTurns = history.filter((m) => m.role === "user");
+  const conversationText = userTurns.map((m) => m.content).join(" ");
+  const singleMatch = userTurns.length === 1 ? await findSingleRitualMatch(c.env, db, conversationText) : null;
   if (singleMatch) {
     const definition = singleRitualDefinition(singleMatch);
     const run = await logRun(db, { teamId: session.teamId, kind: "suggest", input: { converse: true, text: conversationText }, output: definition });
@@ -295,9 +363,13 @@ ai.post("/intent/converse", async (c) => {
     "To design a cadence you need at minimum one job-to-be-done and a team size. Work mode and plan length are optional — default plan length to 12 weeks if it never comes up.",
     "If something required is still missing, set action='ask' and ask for exactly ONE missing thing next — don't list everything at once.",
     "If they're specifically asking for a 1:1 / one-on-one, team size is always 2 — never ask for it. If no other goal is mentioned, default jobSlugs to ['build-cohesion'] and move straight to propose instead of asking what the 1:1 is for.",
+    "Naming ANY specific kind of session to schedule — a design jam, a standup, a retro, a 1:1, a demo day, however small or however poorly it maps to the job list above — always means action='ask' or 'propose', NEVER destination='ritual' and NEVER a message offering a choice between 'browse the library' and 'build a custom cadence'. That choice doesn't exist in this flow and must never be presented. If the thing they named doesn't map cleanly to a job slug, just pick the single closest one yourself (e.g. build-cohesion for a social/team activity, raise-quality for a craft/design activity) instead of asking which job it serves or second-guessing whether to route to the library.",
+    "destination='ritual' is ONLY for an explicit request to browse or look through the library with no scheduling intent at all (e.g. 'show me what rituals exist', 'let me look through the library') — never for a request to schedule something specific, however unfamiliar.",
+    "If they decline your proposal by saying they'll build it themselves, do it manually, do their own thing, or similar — even if a job/team size was already established earlier in this conversation — that is ALWAYS action='route' with destination='plan' (the blank plan builder), so they land somewhere they can actually start typing. NEVER destination='ritual' for this: declining AI help is not the same as wanting to browse the library, and sending them there instead of the plan builder leaves them nowhere to actually build anything.",
     "The moment you have at least one job and a team size, whether given all at once or gathered turn by turn, set action='propose' with a short 1-2 sentence summary of what you're about to build and ask them to confirm.",
-    "If the very first message is clearly not about building a cadence at all — they want their existing calendar, a single ritual, an audit, or an entirely blank plan with no specifics — set action='route' instead, and you MUST also set destination to the matching one of plan/ritual/calendar/audit. Never set action='route' without also setting destination.",
-    "Always carry forward every fact already established earlier in the conversation into jobSlugs/teamSize/workMode/horizonWeeks, even on turns where you're asking or talking about something else — never drop a fact once given.",
+    "Default to wantsMultiple=false — one focused recurring activity, which is what most asks actually want. Only set it true when they explicitly ask for more than one: 'more events', 'a few different meetings', 'not just X', pushing back on a single-item proposal, or naming two or more distinct activities themselves. Your own summary message must match this exactly — if wantsMultiple is false, don't describe multiple activities in the message (that's a promise the proposal won't keep); if true, the message should describe more than one.",
+    "If the very first message is clearly not about building a cadence at all — they want their existing calendar, an audit, or an entirely blank plan with no specifics — set action='route' instead, and you MUST also set destination to the matching one of plan/ritual/calendar/audit. Never set action='route' without also setting destination, and never phrase a route's message as a question — routing happens immediately, the user won't get a chance to answer.",
+    "Always carry forward every fact already established earlier in the conversation into jobSlugs/teamSize/workMode/horizonWeeks/wantsMultiple, even on turns where you're asking or talking about something else — never drop a fact once given.",
   ].join(" ");
 
   let result: ChatToolResult;
@@ -311,7 +383,13 @@ ai.post("/intent/converse", async (c) => {
         tool_choice: { type: "function", function: { name: "respond" } },
         chat_template_kwargs: { enable_thinking: false },
         max_completion_tokens: 400,
-        temperature: 0.3,
+        // Low, not 0.3: this is a classification task (which of a handful of
+        // known actions applies), not creative generation — the same input
+        // giving a different action/destination turn to turn reads as an
+        // outright bug to a user ("I typed the exact same thing and got
+        // routed somewhere else"), which temperature 0.3 was doing in
+        // practice for ambiguous asks like "schedule a design jam."
+        temperature: 0.1,
       },
       2,
     );
@@ -323,6 +401,16 @@ ai.post("/intent/converse", async (c) => {
   if (!rawArgs) return c.json({ error: "the model did not respond — try again" }, 502);
   const parsed = sanitizeConverseResult(parseToolCallArguments(rawArgs) as Record<string, unknown>, new Set(jobSlugsAllowed));
 
+  // The client never resends jobSlugs — the model has to re-derive it from
+  // the raw transcript every single turn, and that extraction is unreliable
+  // enough in practice to come back empty even when its own message text
+  // shows it understood the ask (see matchJobSlugsFromText's comment). Since
+  // an empty jobSlugs is exactly what triggers the "which job?" reprompt
+  // below, leaving this unfixed is an infinite identical-question loop.
+  if (parsed.jobSlugs.length === 0) {
+    parsed.jobSlugs = matchJobSlugsFromText(conversationText, jobRows);
+  }
+
   await logRun(db, { teamId: session.teamId, kind: "intent", input: { messages: history }, output: parsed });
 
   // Defensive downgrade: "route" with no usable destination would otherwise
@@ -331,6 +419,18 @@ ai.post("/intent/converse", async (c) => {
   // conversation open instead of dropping it on the floor.
   if (parsed.action === "route" && !parsed.destination) {
     return c.json({ ...parsed, action: "ask" as const });
+  }
+
+  // Defensive downgrade: a "route" whose own message ends in a question mark
+  // is self-contradictory — routing navigates immediately, so a question
+  // phrased as "browse the library, or want a custom cadence?" would fire
+  // off to destination='ritual' before the user ever gets to answer it. This
+  // is exactly the observed instability for asks like "schedule a design
+  // jam" that don't map cleanly to a job slug: keep the conversation open
+  // instead of silently navigating on what the model itself framed as an
+  // open question.
+  if (parsed.action === "route" && parsed.message.trim().endsWith("?")) {
+    return c.json({ ...parsed, action: "ask" as const, destination: null });
   }
 
   if (parsed.action !== "propose") {
@@ -354,6 +454,17 @@ ai.post("/intent/converse", async (c) => {
     teamSizeMax: parsed.teamSize,
     workMode: parsed.workMode ?? undefined,
     horizonWeeks: parsed.horizonWeeks ?? 12,
+    // "focused" (one activity, no padding) is the default; flips to "broad"
+    // once the user has explicitly asked for more than one thing. Hardcoding
+    // "focused" here regardless was itself a bug — and the model's own
+    // wantsMultiple flag turned out unreliable enough (see
+    // WANTS_MULTIPLE_PATTERN above) that a plain text check on what they
+    // actually typed is ORed in as a safety net.
+    scope: parsed.wantsMultiple || WANTS_MULTIPLE_PATTERN.test(conversationText) ? "broad" : "focused",
+    // The very first thing they said, not the whole conversation — later
+    // turns are just filling in team size etc. and would only dilute this.
+    focusText: userTurns[0]?.content,
+    rotationThemes: parsed.rotationThemes,
   });
 
   if (!outcome.ok) {
@@ -446,6 +557,33 @@ interface SuggestCadenceBody {
   currentLoad?: string;
   horizonWeeks?: number;
   auditScore?: number;
+  /**
+   * "focused" = the conversational intent box asking for one specific named
+   * thing ("schedule a creative jam") — narrow by construction, so a whole
+   * quarter's worth of one-off sessions reads as overkill, not helpful.
+   * "broad" (default) = the explicit multi-job "Design my quarter" form,
+   * where proposing a fuller cadence across several jobs is the actual ask.
+   */
+  scope?: "focused" | "broad";
+  /**
+   * The user's own words for a focused ask (e.g. "schedule a creative
+   * jam") — jobSlugs alone throw this away, leaving retrieval and the final
+   * pick grounded only in the *job's* generic description ("raise the
+   * quality of our craft") rather than the specific thing asked for. That's
+   * how a "creative jam" ask came back proposing "Design Crit" — a real
+   * candidate for that job, but not what was actually named. When present,
+   * this text drives retrieval and the model is told the result must
+   * clearly match it, not just the general job area.
+   */
+  focusText?: string;
+  /**
+   * Explicit named themes for one slot's rotation ("alignment, product
+   * showcase, creative jam, learning") — the PLAN.md §1.3 anchor case (one
+   * slot, N rituals rotating through it), captured directly instead of
+   * left for the model to infer from focusText alone. When present, one
+   * slot's rotation gets exactly one item per theme.
+   */
+  rotationThemes?: string[];
 }
 
 function buildCadenceTool() {
@@ -472,8 +610,10 @@ function buildCadenceTool() {
                   type: "array",
                   items: {
                     type: "object",
-                    properties: { ritualSlug: { type: "string", description: "must be one of the candidate slugs given in the prompt" } },
-                    required: ["ritualSlug"],
+                    properties: {
+                      ritualSlug: { type: "string", description: "must be one of the candidate slugs given in the prompt — omit if nothing on the list is a real match" },
+                      label: { type: "string", description: "a short theme name for this position when no candidate is a real match — e.g. 'Creative Jam'. Set exactly one of ritualSlug or label, never both." },
+                    },
                   },
                 },
               },
@@ -525,8 +665,12 @@ function sanitizeDefinition(raw: { slots?: RawSlot[]; standalone?: RawStandalone
       nth: s.freq === "monthly" && typeof s.nth === "number" ? (s.nth === -1 ? -1 : Math.min(4, Math.max(1, Math.round(s.nth)))) : null,
       durationMin: typeof s.durationMin === "number" ? Math.round(s.durationMin) : null,
       rotation: (s.rotation ?? [])
-        .map((r, i) => ({ position: i, ritualSlug: r.ritualSlug && validSlugs.has(r.ritualSlug) ? r.ritualSlug : null, label: r.label ?? null }))
-        .filter((r) => r.ritualSlug !== null),
+        .map((r, i) => ({ position: i, ritualSlug: r.ritualSlug && validSlugs.has(r.ritualSlug) ? r.ritualSlug : null, label: r.label?.trim() || null }))
+        // Kept as a plain-label position (no ritual yet) rather than
+        // dropped outright — an invented/invalid ritualSlug with a real
+        // label is still a real, named rotation position, matching how
+        // rotation_items.label already works for manually-typed slots.
+        .filter((r) => r.ritualSlug !== null || r.label !== null),
     }))
     .filter((s) => s.rotation.length > 0);
 
@@ -561,8 +705,29 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
   const jobRows = await db.select().from(jobs).where(inArray(jobs.slug, jobSlugs));
   if (jobRows.length === 0) return { ok: false, status: 400, error: "unknown jobs" };
 
-  const retrievalQuery = jobRows.map((j) => [j.name, j.description].filter(Boolean).join(" — ")).join(". ");
-  const matches = await semanticSearch(env, retrievalQuery, { type: "ritual", topK: 24 });
+  const focused = body.scope === "focused";
+  // The conversation's own words ("schedule a creative jam") must lead
+  // retrieval whenever they're available — falling back to the job's
+  // generic description ("raise the quality of our craft") is how a
+  // "creative jam" ask came back proposing "Design Crit": a real candidate
+  // for that job, but not what was actually named. This applies to any
+  // conversational ask (focusText is only ever set by that path, never by
+  // the explicit multi-job "design my quarter" form) — not just a focused,
+  // single-item one; someone who said "more events, not just a staff
+  // meeting" still named specific intent that generic job descriptions
+  // alone would wash out. Job names still ride along as secondary
+  // grounding, not the primary signal.
+  const rotationThemes = body.rotationThemes ?? [];
+  const retrievalQuery = body.focusText
+    ? `${[body.focusText, ...rotationThemes].join(". ")}. Serves: ${jobRows.map((j) => j.name).join(", ")}`
+    : jobRows.map((j) => [j.name, j.description].filter(Boolean).join(" — ")).join(". ");
+  // A focused ask only needs a handful of close candidates — handing it the
+  // same 24 a multi-job "design my quarter" gets just gives the model more
+  // material to pad the proposal with. Scales up a bit with more named
+  // themes so each one actually has real candidates to draw from, not just
+  // whatever's left over after the first couple.
+  const topK = focused ? Math.max(8, rotationThemes.length * 4) : 24;
+  const matches = await semanticSearch(env, retrievalQuery, { type: "ritual", topK });
   if (matches.length === 0) return { ok: false, status: 422, error: "not enough indexed content yet — run the embedding backfill first" };
 
   const candidateRows = await db
@@ -585,6 +750,8 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
   const teamSize = body.teamSizeMax ?? body.teamSizeMin;
 
   const contextLines = [
+    body.focusText ? `The user specifically asked for: "${body.focusText}"` : null,
+    rotationThemes.length ? `They named these specific rotation themes, in order: ${rotationThemes.map((t) => `"${t}"`).join(", ")}` : null,
     `Jobs to serve: ${jobRows.map((j) => j.name).join(", ")}`,
     body.teamSizeMin || body.teamSizeMax ? `Team size: ${body.teamSizeMin ?? "?"}-${body.teamSizeMax ?? "?"}` : null,
     body.workMode ? `Work mode: ${body.workMode}` : null,
@@ -601,7 +768,16 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
     "byweekday is 0=Sunday..6=Saturday. Spread slots across different weekdays rather than stacking them on one day. " +
     (teamSize
       ? `The team size given is ${teamSize}. The larger the team, the less often a whole-team ritual should repeat: for a slot whose rotation is entirely large-group rituals (size range covers ${teamSize} or has no upper bound), prefer biweekly or monthly over weekly once the team is bigger than about 15 people — the larger past that, the less frequent it should be. Smaller-group or pair/subteam rituals (size range well below ${teamSize}) can still repeat weekly regardless of overall team size.`
-      : "No team size was given — don't guess one; frequency doesn't need to account for team size here.");
+      : "No team size was given — don't guess one; frequency doesn't need to account for team size here.") +
+    (focused
+      ? " This is a narrow request for ONE specific activity, not a full quarter plan — propose exactly ONE slot (a second only if it's an unmistakable natural pairing, e.g. a prep session the ritual explicitly depends on). Do NOT add standalone one-off sessions unless the ask itself clearly described more than one activity. Do not use the rest of the candidate list just because it's there."
+      : "") +
+    (body.focusText
+      ? ` The ritual(s) you pick must clearly be what was actually asked for ("${body.focusText}") — a candidate that only serves the general job area but doesn't match the specific activity(ies) named is the wrong pick, even if it's the closest thing on the list. If nothing on the candidate list is a genuine match for what was named, pick the closest real fit and name the slot after what they asked for (e.g. "Creative Jam") rather than the underlying ritual's own title.`
+      : "") +
+    (rotationThemes.length
+      ? ` They named ${rotationThemes.length} specific rotation themes (listed above) — build exactly ONE slot whose rotation array has exactly ${rotationThemes.length} positions, one per theme, in the order given. For each position: use the closest matching candidate ritualSlug if one is a genuine fit for that specific theme; otherwise omit ritualSlug and set label to that theme's name instead (e.g. label: "Creative Jam") rather than forcing a mismatched candidate or dropping the theme. Never merge two named themes into one position, and never add extra positions beyond the ${rotationThemes.length} named.`
+      : "");
 
   const userPrompt = `${contextLines.join("\n")}\n\nCandidate rituals (use only these slugs):\n${candidateLines}\n\nPropose a cadence for this team.`;
 
@@ -631,9 +807,17 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
   const parsed = parseToolCallArguments(rawArgs);
 
   const validSlugs = new Set(candidateSlugs);
-  const definition = sanitizeDefinition(parsed as { slots?: RawSlot[]; standalone?: RawStandalone[] }, validSlugs);
+  let definition = sanitizeDefinition(parsed as { slots?: RawSlot[]; standalone?: RawStandalone[] }, validSlugs);
   if (definition.slots.length === 0 && definition.standalone.length === 0) {
     return { ok: false, status: 502, error: "the model's proposal didn't use any valid rituals — try again" };
+  }
+
+  // Defensive cap, not just prompt guidance: a "focused" ask still shouldn't
+  // come back as a dozen-item proposal even if the model didn't fully
+  // follow the system prompt above — same "never trust the schema alone"
+  // discipline as elsewhere in this file.
+  if (focused) {
+    definition = { slots: definition.slots.slice(0, 2), standalone: definition.standalone.slice(0, 1) };
   }
 
   const run = await logRun(db, { teamId, kind: "suggest", input: body, output: definition });

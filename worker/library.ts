@@ -68,7 +68,11 @@ library.get("/rituals", async (c) => {
 
   if (q) {
     const term = `%${q.replace(/[%_]/g, (m) => "\\" + m)}%`;
-    filters.push(or(like(rituals.title, term), like(rituals.summary, term))!);
+    // Also matches purpose and tags (stored as JSON text, so a substring
+    // match against the raw column still works) — title/summary alone missed
+    // things like a "Learning" search against a ritual tagged `["learning"]`
+    // but with neither word in its title or summary.
+    filters.push(or(like(rituals.title, term), like(rituals.summary, term), like(rituals.purpose, term), like(rituals.tags, term))!);
   }
 
   let ritualIdFilter: number[] | null = null;

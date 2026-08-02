@@ -1,7 +1,7 @@
 import { and, asc, eq, or } from "drizzle-orm";
 import type { Db } from "./db";
 import { occurrences, plans, rituals, rotationItems, slots, type CadenceDefinition, type Plan, type Slot } from "../db/schema";
-import { addDaysISO, firstMatchingDate } from "./schedule";
+import { addDaysISO, derivePattern, firstMatchingDate } from "./schedule";
 import { materializeSlotOccurrences } from "./planner";
 
 /** A ritual slug only resolves if the caller's team can actually see it — public, or owned by them. */
@@ -51,11 +51,22 @@ export async function instantiatePlanFromDefinition(db: Db, args: InstantiatePla
   });
   const [plan] = await db.select().from(plans).where(eq(plans.id, planId)).limit(1);
 
+  // A single-slot plan (the common case for a focused AI ask, or a
+  // one-slot template) means "start it on the date I picked," full stop —
+  // silently rolling forward to whichever weekday the slot's own pattern
+  // happens to name reads as the wrong day entirely ("I said Aug 2, it
+  // scheduled something else"). A multi-slot cadence keeps the normal
+  // forward-search per slot: those are deliberately spread across
+  // different weekdays, so forcing every slot onto the start date's single
+  // weekday would collapse that spread instead of respecting it.
+  const singleSlotPlan = args.definition.slots.length === 1;
+
   for (const slotDef of args.definition.slots) {
     // The anchor is reconstructed from the portable (byweekday, nth) pattern
     // — the exact inverse of derivePattern(), which is what publish used to
     // create this pattern in the first place.
-    const anchorDate = firstMatchingDate(slotDef.freq, slotDef.byweekday, slotDef.nth, args.startDate);
+    const anchorDate = singleSlotPlan ? args.startDate : firstMatchingDate(slotDef.freq, slotDef.byweekday, slotDef.nth, args.startDate);
+    const { byweekday, nth } = singleSlotPlan ? derivePattern(args.startDate, slotDef.freq) : { byweekday: slotDef.byweekday, nth: slotDef.nth ?? null };
     const slot: Slot = {
       id: crypto.randomUUID(),
       planId,
@@ -63,8 +74,8 @@ export async function instantiatePlanFromDefinition(db: Db, args: InstantiatePla
       color: slotDef.color ?? null,
       freq: slotDef.freq,
       interval: slotDef.interval ?? 1,
-      byweekday: slotDef.byweekday,
-      nth: slotDef.nth ?? null,
+      byweekday,
+      nth,
       startTime: slotDef.startTime ?? null,
       durationMin: slotDef.durationMin ?? null,
       cycleLength: slotDef.rotation.length,
