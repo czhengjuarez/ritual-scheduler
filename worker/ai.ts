@@ -271,6 +271,21 @@ const ONE_ON_ONE_PATTERN = /\b1[\s:-]?on[\s:-]?1\b|\b1:1\b|\bone[\s-]?on[\s-]?on
  */
 const WANTS_MULTIPLE_PATTERN = /\bmore events?\b|\bmultiple\b|\bseveral\b|\ba few different\b|\bnot just\b|\bmore than one\b|\bdifferent (meetings|events|rituals|activities)\b/i;
 
+/**
+ * "Team Ritual Audit" (or "ritual audit") names the *sister app*
+ * (src/config/suite.ts), not anything in this app's own library — but the
+ * library happens to have a real ritual called "Calendar Audit / Meeting
+ * Cleanse", which shares enough vocabulary with that name to win
+ * findSingleRitualMatch's semantic check below (verified live: "Ritual
+ * Audit" and even the literal full name both scored it well past the 0.72
+ * threshold). That silently proposes scheduling the wrong thing instead of
+ * routing to the other app at all. Checked before semantic search even
+ * runs, same as ONE_ON_ONE_PATTERN — deliberately narrow to "ritual audit"
+ * phrasing specifically, not bare "audit"/"calendar audit"/"meeting audit",
+ * which should keep matching the real in-library ritual.
+ */
+const TEAM_RITUAL_AUDIT_PATTERN = /\b(team\s+)?ritual\s+audit\b/i;
+
 async function findSingleRitualMatch(env: Env, db: Db, text: string) {
   if (ONE_ON_ONE_PATTERN.test(text)) {
     const [row] = await db.select().from(rituals).where(eq(rituals.slug, "manager-1-1")).limit(1);
@@ -332,6 +347,25 @@ ai.post("/intent/converse", async (c) => {
   // be reacting, not a stateless re-match of everything said so far.
   const userTurns = history.filter((m) => m.role === "user");
   const conversationText = userTurns.map((m) => m.content).join(" ");
+
+  // Checked before anything else, including findSingleRitualMatch below —
+  // "ritual audit" naming the sister app must never be treated as a library
+  // search at all, not even to lose a close race against the real
+  // "Calendar Audit / Meeting Cleanse" ritual.
+  if (TEAM_RITUAL_AUDIT_PATTERN.test(conversationText)) {
+    return c.json({
+      action: "route" as const,
+      message: "Team Ritual Audit is a separate app — I'll take you there.",
+      jobSlugs: [],
+      teamSize: null,
+      workMode: null,
+      horizonWeeks: null,
+      destination: "audit" as const,
+      wantsMultiple: false,
+      rotationThemes: [],
+    });
+  }
+
   const singleMatch = userTurns.length === 1 ? await findSingleRitualMatch(c.env, db, conversationText) : null;
   if (singleMatch) {
     const definition = singleRitualDefinition(singleMatch);

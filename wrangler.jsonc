@@ -20,10 +20,10 @@
   // Google sign-in (PLAN.md §7, worker/auth.ts). The client id is public by
   // design (verification happens server-side against Google's JWKS), so it's
   // safe to commit — same value as TeamRitualAudit's, one OAuth client for
-  // the whole suite. AUTH_ENABLED defaults off: anonymous sessions stay the
-  // default experience even once credentials are configured.
+  // the whole suite. Anonymous sessions stay the default experience either
+  // way — AUTH_ENABLED only controls whether the "Sign in" button renders.
   "vars": {
-    "AUTH_ENABLED": "false",
+    "AUTH_ENABLED": "true",
     "GOOGLE_CLIENT_ID": "52380837328-frg30utb8vqc2bcmfn74ugnqonnfocpg.apps.googleusercontent.com"
   },
   // Anonymous session signing key (see worker/session.ts). Local dev: set in
