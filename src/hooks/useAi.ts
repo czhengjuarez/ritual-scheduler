@@ -140,6 +140,9 @@ export interface ConverseResult {
   workMode: "remote" | "hybrid" | "in-person" | null;
   horizonWeeks: number | null;
   destination: "plan" | "ritual" | "calendar" | "audit" | null;
+  wantsMultiple?: boolean;
+  rotationThemes?: string[];
+  excludeThemes?: string[];
   suggestion?: SuggestCadenceResult;
 }
 
@@ -148,9 +151,16 @@ export interface ConverseResult {
  * sends the whole transcript so far and gets back either a follow-up
  * question, a route (they wanted something else entirely), or a ready
  * SuggestCadenceResult to review once enough has been gathered.
+ *
+ * `currentProposal` carries the last proposal's actual structure (not just
+ * chat text) once one exists — the caller (IntentBox) persists it across
+ * turns so a plain "remove X"/"confirm" reply can be applied as a patch to
+ * the real prior structure server-side, instead of the model trying to
+ * regenerate everything from the transcript alone.
  */
 export function useConverseIntent() {
   return useMutation({
-    mutationFn: (messages: ConverseMessage[]) => sendJSON<ConverseResult>("/api/intent/converse", "POST", { messages }),
+    mutationFn: ({ messages, currentProposal }: { messages: ConverseMessage[]; currentProposal?: SuggestCadenceResult }) =>
+      sendJSON<ConverseResult>("/api/intent/converse", "POST", { messages, currentProposal }),
   });
 }

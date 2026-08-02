@@ -1,7 +1,18 @@
 import { Hono } from "hono";
 import { and, eq, gte, inArray, or } from "drizzle-orm";
 import { getDb, type Db } from "./db";
-import { aiRuns, cadenceTemplates, categories, jobs, occurrences, rituals, type CadenceDefinition, type CadenceSlotDef, type CadenceStandaloneDef } from "../db/schema";
+import {
+  aiRuns,
+  cadenceTemplates,
+  categories,
+  jobs,
+  occurrences,
+  rituals,
+  type CadenceDefinition,
+  type CadenceRotationItemDef,
+  type CadenceSlotDef,
+  type CadenceStandaloneDef,
+} from "../db/schema";
 import { backfillCadenceEmbeddings, backfillRitualEmbeddings, semanticSearch } from "./embeddings";
 import { instantiatePlanFromDefinition } from "./cadenceInstantiate";
 import { getOwnedPlan, computePlanWarnings } from "./planner";
@@ -164,6 +175,67 @@ function buildConverseTool(jobSlugsAllowed: string[]) {
         required: ["action", "message"],
       },
     },
+  };
+}
+
+/**
+ * Once a cadence has already been proposed, a follow-up reply is far more
+ * often a small edit ("remove X", "looks good") than a brand new design
+ * request — but the main `respond` tool above has no memory of what was
+ * already proposed, so every reply regenerated from scratch and often lost
+ * fidelity (verified live: "remove the monthly team pulse, weekly sync is
+ * plenty" just repeated the old 2-item proposal unchanged).
+ *
+ * This is a deliberately much smaller, easier task than full cadence
+ * design: classify the reply against a short list of what's already
+ * proposed. `remove`/`confirm` get handled as a deterministic code patch
+ * against the *actual* persisted definition (see removeMatchingItems above
+ * and the currentProposal branch in /intent/converse) — the model never
+ * has to reproduce the structure from memory, only say what changed.
+ * `other` falls through to the full existing pipeline unchanged.
+ */
+function buildEditIntentTool(itemLabels: string[]) {
+  return {
+    type: "function" as const,
+    function: {
+      name: "classify_edit",
+      description: "Decide how the user's latest message relates to the cadence you already proposed.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["confirm", "remove", "other"],
+            description:
+              "confirm: they're happy with the current proposal as-is and ready to build it — including a plain 'yes'/'looks good'/'go ahead'. " +
+              "remove: they want to drop one or more of the currently-proposed items (listed below), keeping everything else exactly as it is. " +
+              "other: anything else — a structural change, a new addition, a totally different request, or genuinely unclear — needs a fresh full response instead of a patch.",
+          },
+          targets: {
+            type: "array",
+            items: { type: "string" },
+            description: `REQUIRED and non-empty whenever action='remove' — which of these currently-proposed items to drop, in their own words: ${itemLabels.join(", ")}. Empty array for confirm/other.`,
+          },
+          message: { type: "string", description: "short 1-sentence reply acknowledging the change (or confirming), not a full re-summary" },
+        },
+        required: ["action", "targets", "message"],
+      },
+    },
+  };
+}
+
+interface EditIntentResult {
+  action: "confirm" | "remove" | "other";
+  targets: string[];
+  message: string;
+}
+
+function sanitizeEditIntentResult(raw: Record<string, unknown>): EditIntentResult {
+  const action = raw.action === "confirm" || raw.action === "remove" ? raw.action : "other";
+  return {
+    action,
+    targets: sanitizeStringArray(raw.targets),
+    message: typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : "Got it.",
   };
 }
 
@@ -332,12 +404,124 @@ ai.post("/intent/converse", async (c) => {
 
   if (!(await checkRateLimit(db, session.teamId))) return c.json({ error: "AI rate limit reached — try again in a bit" }, 429);
 
-  const body = await c.req.json<{ messages?: ConverseMessage[] }>().catch(() => ({}) as Record<string, never>);
+  const body = await c
+    .req.json<{
+      messages?: ConverseMessage[];
+      currentProposal?: { runId: number; definition: CadenceDefinition; durationWeeks: number; candidates: { slug: string; title: string }[] };
+    }>()
+    .catch(() => ({}) as Record<string, never>);
   const history = (body.messages ?? []).filter(
     (m): m is ConverseMessage => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim().length > 0,
   );
   if (history.length === 0) return c.json({ error: "messages is required" }, 400);
   if (history.length > 20) return c.json({ error: "this conversation has gotten long — start a new one" }, 400);
+
+  // Once a cadence has already been proposed, a reply is far more often a
+  // small edit than a brand new design ask — checked before anything else
+  // below, all of which assumes it's starting from zero. See
+  // buildEditIntentTool's comment for why this exists: a full regeneration
+  // on every turn was the actual root cause of "remove X" silently keeping
+  // X, since the model had no memory of the structure it already built.
+  if (body.currentProposal) {
+    const { definition, candidates, durationWeeks } = body.currentProposal;
+    const candidateTitleBySlug = new Map(candidates.map((cand) => [cand.slug, cand.title]));
+    const rotationLabel = (r: CadenceRotationItemDef) => r.label ?? (r.ritualSlug ? (candidateTitleBySlug.get(r.ritualSlug) ?? r.ritualSlug) : "untitled");
+    // A single-item slot is named as a whole (its own `name`, e.g. "Staff
+    // Meeting"); a multi-item rotation is named by its individual positions
+    // ("Product Showcase", "Learning") — those are the actual things a
+    // "remove X" reply refers to, not the slot's own umbrella name. Missing
+    // this the first time meant the model only ever saw one label for the
+    // whole slot and could never recognize "product showcase" as anything
+    // real to remove, defaulting to 'other' every time.
+    const itemLabels = [
+      ...definition.slots.flatMap((s) => (s.rotation.length > 1 ? s.rotation.map(rotationLabel) : [s.name])),
+      ...definition.standalone.map((o) => (o.ritualSlug ? (candidateTitleBySlug.get(o.ritualSlug) ?? o.ritualSlug) : "a one-off item")),
+    ];
+
+    let editResult: EditIntentResult = { action: "other", targets: [], message: "" };
+    try {
+      const editCallResult = await runChatToolWithRetry(
+        c.env.AI,
+        CHAT_MODEL,
+        {
+          messages: [
+            {
+              role: "system",
+              content: `You're revising a recurring meeting cadence you already proposed. Currently proposed: ${itemLabels.join(", ")}. You MUST call classify_edit exactly once.`,
+            },
+            ...history,
+          ],
+          tools: [buildEditIntentTool(itemLabels)],
+          tool_choice: { type: "function", function: { name: "classify_edit" } },
+          chat_template_kwargs: { enable_thinking: false },
+          max_completion_tokens: 200,
+          temperature: 0.1,
+        },
+        2,
+      );
+      const rawArgs = editCallResult.choices?.[0]?.message?.tool_calls?.[0]?.function?.arguments;
+      if (rawArgs) editResult = sanitizeEditIntentResult(parseToolCallArguments(rawArgs) as Record<string, unknown>);
+    } catch {
+      // Classification failed — fall through to the full pipeline below
+      // rather than erroring the whole turn out.
+    }
+
+    // Defensive fallback, not just a required schema field: verified live
+    // that the model sometimes correctly classifies action='remove' and
+    // even names the item in its own `message` ("Removing Product
+    // Showcase...") while still leaving the structured `targets` array
+    // empty. Recover the target(s) by checking which known item labels
+    // actually appear in its own message text before giving up and falling
+    // through to a full regeneration.
+    if (editResult.action === "remove" && editResult.targets.length === 0) {
+      editResult = { ...editResult, targets: itemLabels.filter((label) => matchesLabel(editResult.message, [label])) };
+    }
+
+    if (editResult.action === "confirm") {
+      const run = await logRun(db, { teamId: session.teamId, kind: "suggest", input: { converse: true, edit: "confirm" }, output: definition });
+      return c.json({
+        action: "propose" as const,
+        message: editResult.message,
+        jobSlugs: [],
+        teamSize: null,
+        workMode: null,
+        horizonWeeks: null,
+        destination: null,
+        suggestion: { runId: run.id, definition, durationWeeks, candidates },
+      });
+    }
+
+    if (editResult.action === "remove" && editResult.targets.length > 0) {
+      // Applied directly against the persisted definition, not regenerated
+      // — everything not matching a target survives byte-for-byte (same
+      // ritualSlugs, same labels, same frequency). This is what actually
+      // guarantees "keep the original," by construction rather than hope.
+      const updated = removeMatchingItems(definition, editResult.targets, candidateTitleBySlug);
+      if (updated.slots.length > 0 || updated.standalone.length > 0) {
+        const run = await logRun(db, {
+          teamId: session.teamId,
+          kind: "suggest",
+          input: { converse: true, edit: "remove", targets: editResult.targets },
+          output: updated,
+        });
+        return c.json({
+          action: "propose" as const,
+          message: editResult.message,
+          jobSlugs: [],
+          teamSize: null,
+          workMode: null,
+          horizonWeeks: null,
+          destination: null,
+          suggestion: { runId: run.id, definition: updated, durationWeeks, candidates },
+        });
+      }
+      // Removing everything requested would leave nothing — fall through
+      // to a full regeneration instead of erroring the turn out.
+    }
+    // action === "other" (or an empty-result "remove"): fall through,
+    // ignore currentProposal, and proceed with the existing pipeline below
+    // exactly as if this were a conversation with no proposal yet.
+  }
 
   // A dominant, unambiguous single-ritual match is checked before the model
   // even runs — this is what actually fixes "a plain '1:1' ask gets odd
@@ -746,6 +930,46 @@ type GenerateCadenceOutcome =
   | { ok: true; runId: number; definition: CadenceDefinition; durationWeeks: number; candidates: { slug: string; title: string }[] }
   | { ok: false; status: 400 | 422 | 502; error: string };
 
+/** Fuzzy, case-insensitive, either-direction substring match — "monthly team pulse" matches "Monthly Team Pulse" or a partial phrase either way. */
+function matchesLabel(text: string | null | undefined, targets: string[]): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return targets.some((target) => {
+    const t = target.toLowerCase();
+    return lower.includes(t) || t.includes(lower);
+  });
+}
+
+/**
+ * Removes any slot, rotation position, or standalone item matching `targets`
+ * from a CadenceDefinition. Shared by two call sites that both need the
+ * identical matching behavior: the excludeThemes defensive filter right
+ * after a fresh generation, and the patch-based "remove X" edit applied
+ * directly against an already-proposed, persisted definition (see
+ * `/intent/converse`'s currentProposal branch) — the latter is what
+ * actually guarantees "keep everything else exactly as it was," since it
+ * operates on the real prior structure instead of asking the model to
+ * reconstruct it.
+ *
+ * Renumbers remaining rotation positions to stay 0..N-1 with no gaps —
+ * worker/schedule.ts's `position % cycleLength` rotation math depends on it.
+ */
+function removeMatchingItems(definition: CadenceDefinition, targets: string[], titleBySlug: Map<string, string>): CadenceDefinition {
+  if (targets.length === 0) return definition;
+  const resolveTitle = (slug: string | null) => (slug ? titleBySlug.get(slug) : undefined);
+  return {
+    slots: definition.slots
+      .map((s) => ({
+        ...s,
+        rotation: s.rotation
+          .filter((r) => !matchesLabel(r.label, targets) && !matchesLabel(resolveTitle(r.ritualSlug), targets))
+          .map((r, i) => ({ ...r, position: i })),
+      }))
+      .filter((s) => s.rotation.length > 0 && !matchesLabel(s.name, targets)),
+    standalone: definition.standalone.filter((o) => !matchesLabel(resolveTitle(o.ritualSlug), targets)),
+  };
+}
+
 /**
  * The actual generation pipeline, factored out so both the one-shot
  * `/suggest-cadence` endpoint and the conversational builder's "propose"
@@ -873,39 +1097,44 @@ async function generateCadenceSuggestion(env: Env, db: Db, teamId: string, body:
     return { ok: false, status: 502, error: "the model's proposal didn't use any valid rituals — try again" };
   }
 
+  // Consolidate for rotationThemes BEFORE the focused-cap slice below —
+  // the model doesn't reliably keep several named themes in one slot's
+  // rotation even when told to (verified live: 4 named themes came back
+  // split across 2 slots on different days with one dropped entirely).
+  // Flatten whatever it returned into exactly one slot, deterministically,
+  // rather than trusting the prompt instruction alone.
+  if (rotationThemes.length > 1 && definition.slots.length > 0) {
+    const allRotation = definition.slots.flatMap((s) => s.rotation);
+    const seen = new Set<string>();
+    const consolidatedRotation: CadenceRotationItemDef[] = [];
+    for (const item of allRotation) {
+      const key = item.ritualSlug ?? item.label ?? "";
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      consolidatedRotation.push(item);
+      if (consolidatedRotation.length >= rotationThemes.length) break;
+    }
+    const primary = definition.slots[0];
+    definition = {
+      slots: [{ ...primary, rotation: consolidatedRotation.map((r, i) => ({ ...r, position: i })) }],
+      standalone: [], // a named-rotation ask means one recurring slot, not extra one-offs
+    };
+  }
+
   // Defensive cap, not just prompt guidance: a "focused" ask still shouldn't
   // come back as a dozen-item proposal even if the model didn't fully
   // follow the system prompt above — same "never trust the schema alone"
-  // discipline as elsewhere in this file.
+  // discipline as elsewhere in this file. No-op once consolidation above
+  // has already reduced to one slot.
   if (focused) {
     definition = { slots: definition.slots.slice(0, 2), standalone: definition.standalone.slice(0, 1) };
   }
 
   // Same discipline for excludeThemes: strip anything matching a requested
-  // removal even if the model included it anyway. Renumber remaining
-  // rotation positions afterward — they must stay 0..N-1 with no gaps, or
-  // worker/schedule.ts's `position % cycleLength` rotation math breaks.
+  // removal even if the model included it anyway.
   if (excludeThemes.length) {
     const candidateTitleBySlug = new Map(candidateRows.map((r) => [r.slug, r.title]));
-    const matchesExclude = (label: string | null | undefined): boolean => {
-      if (!label) return false;
-      const lower = label.toLowerCase();
-      return excludeThemes.some((theme) => {
-        const t = theme.toLowerCase();
-        return lower.includes(t) || t.includes(lower);
-      });
-    };
-    definition = {
-      slots: definition.slots
-        .map((s) => ({
-          ...s,
-          rotation: s.rotation
-            .filter((r) => !matchesExclude(r.label) && !matchesExclude(r.ritualSlug ? candidateTitleBySlug.get(r.ritualSlug) : null))
-            .map((r, i) => ({ ...r, position: i })),
-        }))
-        .filter((s) => s.rotation.length > 0 && !matchesExclude(s.name)),
-      standalone: definition.standalone.filter((o) => !matchesExclude(o.ritualSlug ? candidateTitleBySlug.get(o.ritualSlug) : null)),
-    };
+    definition = removeMatchingItems(definition, excludeThemes, candidateTitleBySlug);
     if (definition.slots.length === 0 && definition.standalone.length === 0) {
       return { ok: false, status: 502, error: "excluding everything requested left nothing to propose — try describing what you do want" };
     }

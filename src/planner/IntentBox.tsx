@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
 import { buttonClass, cardClass, inputClass, labelClass } from "@ops-forward/keel";
-import { useConverseIntent, useAcceptSuggestion, type ConverseMessage } from "../hooks/useAi";
+import { useConverseIntent, useAcceptSuggestion, type ConverseMessage, type SuggestCadenceResult } from "../hooks/useAi";
 import { TEAM_RITUAL_AUDIT_URL } from "../config/suite";
 
 function todayISO(): string {
@@ -38,7 +38,14 @@ export function IntentBox({
   const accept = useAcceptSuggestion();
   const navigate = useNavigate();
 
-  const suggestion = converse.data?.action === "propose" ? converse.data.suggestion : undefined;
+  // Persisted across turns — not derived from converse.data, which only
+  // reflects the *last* call's result. This is the actual structure sent
+  // back as `currentProposal` on every subsequent turn, so a plain
+  // "remove X"/"confirm" reply can be applied as a patch to the real prior
+  // proposal server-side instead of the model reconstructing it from the
+  // chat transcript (see worker/ai.ts's currentProposal branch).
+  const [proposal, setProposal] = useState<SuggestCadenceResult | undefined>(undefined);
+  const suggestion = proposal;
   const [startDate, setStartDate] = useState(todayISO);
   const [planName, setPlanName] = useState("AI-suggested plan");
 
@@ -49,27 +56,31 @@ export function IntentBox({
     setMessages(next);
     setInput("");
     setNote(null);
-    converse.mutate(next, {
-      onSuccess: (result) => {
-        setMessages((m) => [...m, { role: "assistant", content: result.message }]);
-        if (result.action !== "route") return;
-        switch (result.destination) {
-          case "plan":
-            onWantsPlan();
-            break;
-          case "ritual":
-            navigate("/library");
-            break;
-          case "calendar":
-            if (onDone) onDone();
-            else setNote(calendarFallbackNote);
-            break;
-          case "audit":
-            window.open(TEAM_RITUAL_AUDIT_URL, "_blank", "noopener,noreferrer");
-            break;
-        }
+    converse.mutate(
+      { messages: next, currentProposal: proposal },
+      {
+        onSuccess: (result) => {
+          setMessages((m) => [...m, { role: "assistant", content: result.message }]);
+          if (result.suggestion) setProposal(result.suggestion);
+          if (result.action !== "route") return;
+          switch (result.destination) {
+            case "plan":
+              onWantsPlan();
+              break;
+            case "ritual":
+              navigate("/library");
+              break;
+            case "calendar":
+              if (onDone) onDone();
+              else setNote(calendarFallbackNote);
+              break;
+            case "audit":
+              window.open(TEAM_RITUAL_AUDIT_URL, "_blank", "noopener,noreferrer");
+              break;
+          }
+        },
       },
-    });
+    );
   };
 
   const buildIt = () => {
