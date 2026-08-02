@@ -115,3 +115,95 @@ library.get("/rituals/:slug", async (c) => {
 
   return c.json({ item: { ...item, jobs: tags } });
 });
+
+// ─── Contribution: team-instant, public is a second step ──────────────────
+// "Adding a missing ritual is a small inline form — it lands as a
+// team-visibility ritual immediately; publishing publicly is an optional
+// second step" (PLAN.md §5.4). Team visibility needs no approval queue;
+// only the public gallery is curated.
+
+const MIN_FILL_TIME_MS = 3_000;
+
+/**
+ * Spam mitigation copied from design-resources' public suggestion form
+ * (PLAN.md §5.5): a hidden honeypot field real users never fill, plus a
+ * timing check rejecting submissions faster than a human could plausibly
+ * complete the form. Both failure modes return a generic success so an
+ * automated submitter can't learn to adapt and probe for the real check.
+ * This applies here, not just to a "public suggestion" form, because every
+ * visitor already has a session (PLAN.md §7) — there is no logged-out vs.
+ * logged-in distinction yet that would otherwise gate this endpoint.
+ */
+function looksLikeSpam(body: { honeypot?: string; renderedAt?: number }): boolean {
+  return !!body.honeypot?.trim() || typeof body.renderedAt !== "number" || Date.now() - body.renderedAt < MIN_FILL_TIME_MS;
+}
+
+library.post("/rituals", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const body = await c
+    .req.json<{
+      title?: string;
+      summary?: string;
+      categoryId?: number;
+      engagement?: string;
+      durationMin?: number;
+      load?: string;
+      honeypot?: string;
+      renderedAt?: number;
+    }>()
+    .catch(() => ({}) as Record<string, never>);
+
+  const title = body.title?.trim();
+  if (!title) return c.json({ error: "title is required" }, 400);
+
+  if (looksLikeSpam(body)) {
+    // Pretend success — don't reveal the check to whatever submitted this.
+    return c.json({ ok: true }, 201);
+  }
+
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  const engagement = ALLOWED_ENGAGEMENTS.has(body.engagement ?? "") ? body.engagement! : "session";
+  const load = ALLOWED_LOADS.has(body.load ?? "") ? body.load! : "medium";
+
+  const [item] = await db
+    .insert(rituals)
+    .values({
+      slug: `${slug}-${crypto.randomUUID().slice(0, 6)}`,
+      title,
+      summary: body.summary?.trim() || null,
+      categoryId: body.categoryId ?? null,
+      engagement,
+      durationMin: body.durationMin ?? null,
+      load,
+      visibility: "team",
+      status: "published", // team visibility needs no approval
+      ownerTeamId: session.teamId,
+      createdBy: session.userId,
+    })
+    .returning();
+
+  return c.json({ item }, 201);
+});
+
+/** Requests public review for a ritual this team already owns — the ritual itself enters the admin queue, same as a cadence publish. */
+library.post("/rituals/:id/request-public", async (c) => {
+  const session = c.get("session");
+  const db = getDb(c.env.DB);
+  const id = parseInt(c.req.param("id"), 10);
+  if (Number.isNaN(id)) return c.json({ error: "invalid id" }, 400);
+
+  const [ritual] = await db.select().from(rituals).where(and(eq(rituals.id, id), eq(rituals.ownerTeamId, session.teamId))).limit(1);
+  if (!ritual) return c.json({ error: "not found" }, 404);
+  if (ritual.visibility === "public") return c.json({ item: ritual });
+
+  const [updated] = await db
+    .update(rituals)
+    .set({ visibility: "public", status: "pending", updatedAt: sql`(current_timestamp)` })
+    .where(eq(rituals.id, id))
+    .returning();
+  return c.json({ item: updated });
+});

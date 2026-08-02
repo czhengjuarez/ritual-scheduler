@@ -14,6 +14,8 @@ import { library } from "./library";
 import { planner } from "./planner";
 import { cadences } from "./cadences";
 import { ics } from "./ics";
+import { admin } from "./admin";
+import { adminAuth, adminAuthRoutes } from "./adminAuth";
 
 export interface Env {
   DB: D1Database;
@@ -21,12 +23,12 @@ export interface Env {
   // simulator, where Vite's own dev server handles SPA routing instead.
   ASSETS?: Fetcher;
   SESSION_SECRET: string;
+  ADMIN_PASSWORD?: string;
 
   // Later phases:
   // MEDIA: R2Bucket;                 -- Phase 8: covers, attachments, exports
   // AI: Ai;                          -- Phase 6: embeddings, suggestions
   // VECTORIZE: VectorizeIndex;       -- Phase 6: semantic search
-  // ADMIN_PASSWORD: string;          -- Phase 5: admin gate
   // GOOGLE_CLIENT_ID: string;        -- Phase 6: Google sign-in (module ported
   //                                     from TeamRitualAudit/src/auth/)
 }
@@ -82,6 +84,13 @@ app.get("/api/session", async (c) => {
 app.route("/api", library);
 app.route("/api", planner);
 app.route("/api", cadences);
+
+// Admin: password-gated (PLAN.md §7 — Cloudflare Access needs a custom
+// domain this project doesn't have). Login/logout/session stay ungated;
+// everything under /api/admin/* requires a valid admin session.
+app.route("/api/admin-auth", adminAuthRoutes);
+app.use("/api/admin/*", adminAuth);
+app.route("/api/admin", admin);
 
 // Public — outside /api on purpose, so it never hits the session middleware
 // above. Calendar apps poll this with no cookie; the token in the URL is the

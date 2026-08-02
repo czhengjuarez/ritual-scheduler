@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, Sparkles, ArrowRight } from "lucide-react";
+import { CalendarDays } from "lucide-react";
 import { buttonClass, cardClass, inputClass, labelClass } from "@ops-forward/keel";
 import { useCreatePlan } from "../hooks/usePlanner";
+import { JobPicker } from "./JobPicker";
 
 function defaultEndDate(start: string): string {
   const d = new Date(start + "T00:00:00");
@@ -12,12 +13,10 @@ function defaultEndDate(start: string): string {
 }
 
 /**
- * "Start from a cadence" is the primary onboarding path (PLAN.md §4, §8
- * Phase 4) — a whole plan someone already built, not a blank form. This
- * form still exists because building from scratch stays available, but it's
- * the secondary path, led by a pointer to the gallery. The full "what are
- * you trying to do?" job picker in front of the gallery is Phase 5 — for now
- * the gallery's own job filter covers the same ground one click deeper.
+ * "What are you trying to do?" is the front door (PLAN.md §5.2, Phase 5) —
+ * not a static link to the gallery anymore. Building from scratch stays
+ * available as the secondary path, and a plain "browse everything" escape
+ * hatch stays one click away for anyone who'd rather skip the questions.
  */
 export function CreatePlanForm() {
   const today = new Date().toISOString().slice(0, 10);
@@ -28,16 +27,10 @@ export function CreatePlanForm() {
 
   return (
     <div className="max-w-lg mx-auto flex flex-col gap-4">
-      <Link to="/cadences" className={cardClass({ className: "p-6 flex items-center gap-4 hover:opacity-90" })}>
-        <Sparkles size={20} strokeWidth={1.75} style={{ color: "var(--of-fg-brand)" }} />
-        <div className="flex-1">
-          <h2 className="font-semibold mb-0.5">Start from a cadence</h2>
-          <p className="text-sm" style={{ color: "var(--of-fg-muted)" }}>
-            Clone a whole plan another team already built — the flagship four-week rotation, a one-week research
-            sprint, and more.
-          </p>
-        </div>
-        <ArrowRight size={20} strokeWidth={1.75} style={{ color: "var(--of-fg-subtle)" }} />
+      <JobPicker />
+
+      <Link to="/cadences" className="text-sm text-center" style={{ color: "var(--of-fg-muted)" }}>
+        or just browse every cadence
       </Link>
 
       <div className="flex items-center gap-3 my-1">

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Sparkles } from "lucide-react";
 import { cardClass, badgeClass, selectClass } from "@ops-forward/keel";
 import { useCadenceGallery } from "../hooks/useCadences";
@@ -13,14 +14,49 @@ const WORK_MODES = ["remote", "hybrid", "in-person"] as const;
  * The primary shareable unit is a whole cadence, not a single ritual
  * (PLAN.md §4) — this gallery, not the ritual library, is where "start from
  * something that already works" lives.
+ *
+ * Filters live in the URL, not just component state: the JTBD picker
+ * (PLAN.md §5.2) is a separate screen that lands here with `job`/`teamSize`/
+ * `workMode`/`durationMin`/`durationMax` pre-filled — without URL state,
+ * that hand-off would need its own separate query logic instead of reusing
+ * this page's own filters.
  */
 export function CadencesPage() {
-  const [jobSlug, setJobSlug] = useState<string | null>(null);
-  const [workMode, setWorkMode] = useState<string>("");
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selected, setSelected] = useState<CadenceTemplateDto | null>(null);
 
+  const selectedJobs = useMemo(() => new Set((searchParams.get("job") ?? "").split(",").filter(Boolean)), [searchParams]);
+  const workMode = searchParams.get("workMode") ?? "";
+  const durationMin = searchParams.get("durationMin") ?? undefined;
+  const durationMax = searchParams.get("durationMax") ?? undefined;
+
   const { data: jobsData } = useJobs();
-  const { data, isLoading } = useCadenceGallery({ job: jobSlug ?? undefined, workMode: workMode || undefined });
+  const { data, isLoading } = useCadenceGallery({
+    job: selectedJobs.size ? [...selectedJobs].join(",") : undefined,
+    workMode: workMode || undefined,
+    durationMin: durationMin ? Number(durationMin) : undefined,
+    durationMax: durationMax ? Number(durationMax) : undefined,
+  });
+
+  const toggleJob = (slug: string) => {
+    const next = new Set(selectedJobs);
+    next.has(slug) ? next.delete(slug) : next.add(slug);
+    const params = new URLSearchParams(searchParams);
+    next.size ? params.set("job", [...next].join(",")) : params.delete("job");
+    setSearchParams(params, { replace: true });
+  };
+
+  const setWorkMode = (value: string) => {
+    const params = new URLSearchParams(searchParams);
+    value ? params.set("workMode", value) : params.delete("workMode");
+    setSearchParams(params, { replace: true });
+  };
+
+  const clearJobs = () => {
+    const params = new URLSearchParams(searchParams);
+    params.delete("job");
+    setSearchParams(params, { replace: true });
+  };
 
   return (
     <div className="max-w-6xl mx-auto flex flex-col gap-6">
@@ -33,11 +69,11 @@ export function CadencesPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Chip active={jobSlug === null} onClick={() => setJobSlug(null)}>
+        <Chip active={selectedJobs.size === 0} onClick={clearJobs}>
           All jobs
         </Chip>
         {jobsData?.items.map((job) => (
-          <Chip key={job.slug} active={jobSlug === job.slug} onClick={() => setJobSlug(job.slug)}>
+          <Chip key={job.slug} active={selectedJobs.has(job.slug)} onClick={() => toggleJob(job.slug)}>
             {job.name}
           </Chip>
         ))}

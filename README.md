@@ -3,7 +3,7 @@
 A scheduler for team rituals. Teams lay out a deliberate cadence — weekly
 rotations, standalone rituals, campaigns spanning weeks — across a period of
 up to a year. See [PLAN.md](./PLAN.md) for the full design and phasing; this
-README covers through Phase 4 (cadence templates: clone & publish).
+README covers through Phase 5 (JTBD onboarding, contribution & admin).
 
 ## Tech stack
 
@@ -19,8 +19,8 @@ README covers through Phase 4 (cadence templates: clone & publish).
 ```bash
 npm install
 
-# Local secrets (session signing key) — see .dev.vars.example
-cp .dev.vars.example .dev.vars   # then fill in SESSION_SECRET
+# Local secrets (session signing key + admin password) — see .dev.vars.example
+cp .dev.vars.example .dev.vars   # then fill in SESSION_SECRET and ADMIN_PASSWORD
 
 # D1: create once per environment, then point wrangler.jsonc at the real id
 npx wrangler d1 create ritual-builder
@@ -41,7 +41,8 @@ effect on the remote database.
 
 ```bash
 npm run build
-npx wrangler secret put SESSION_SECRET   # production secret, once
+npx wrangler secret put SESSION_SECRET    # production secret, once
+npx wrangler secret put ADMIN_PASSWORD    # gates /api/admin/* — see Phase 5 below
 npx wrangler d1 migrations apply ritual-builder --remote
 npm run deploy
 ```
@@ -145,16 +146,65 @@ it, rather than hand-editing `db/seed/seed-rituals.sql` directly.
   weeks, referencing real ritual slugs from the Phase 1 seed — including the
   flagship four-week rotation from PLAN.md §1.3.
 
+- **Phase 5** — JTBD onboarding, contribution, and admin. No schema changes:
+  admin auth is a separate cookie (not a DB row), and ritual contribution
+  reuses the `rituals` table's existing `status`/`visibility` columns from
+  Phase 1.
+
+  **Admin** (`worker/admin.ts` + `worker/adminAuth.ts`) is gated by a single
+  shared password, ported from `design-resources/worker/auth.ts` — Cloudflare
+  Access needs a custom domain (zone) for path-scoped applications, which
+  `*.workers.dev` doesn't have. `POST /api/admin-auth/login` issues a signed,
+  httpOnly session cookie (`admin_session`, distinct from the anonymous team
+  session); `adminAuth` gates everything under `/api/admin/*`. Categories and
+  jobs are a flat list and a many-to-many tag respectively, not
+  design-resources' category tree, so "delete = no orphans" needed no custom
+  reparent logic: `rituals.category_id` is `ON DELETE SET NULL` and
+  `ritual_jobs`/`cadence_jobs` are `ON DELETE CASCADE` (both already in the
+  Phase 1 schema) — deleting a category or job just falls back to
+  uncategorized / removes the tag, for free.
+
+  **Contribution** (`worker/library.ts`): `POST /api/rituals` lands a
+  ritual at team visibility immediately, no approval needed — only the
+  public gallery is curated. `POST /api/rituals/:id/request-public` moves a
+  team-owned ritual into the same admin queue a cadence publish uses. Both
+  the honeypot field and the `renderedAt` timing check (`MIN_FILL_TIME_MS =
+  3000`, copied from `design-resources`' public suggestion form) apply here
+  even though the submitter has a session — every visitor already has one
+  pre-auth (PLAN.md §7), so there's no logged-in/logged-out line yet that
+  would otherwise gate spam. **If you're testing this by hand or scripting
+  it, submissions faster than 3 seconds after the form/picker mounts get
+  silently accepted but not created** — that's the anti-spam check working,
+  not a bug; a live Playwright run of this exact flow tripped it once by
+  filling the form too fast to look human.
+
+  **JTBD picker** (`src/planner/JobPicker.tsx`) is the new front door,
+  replacing Phase 4's static "browse the gallery" link. It isn't a separate
+  ranking engine — answering "what are you trying to do?" just builds a
+  `/cadences?job=a,b&teamSize=…&workMode=…&durationMin=…&durationMax=…` URL
+  and navigates there, reusing the gallery's own filters (now read from and
+  written to the URL via `useSearchParams`, not just component state, so the
+  hand-off works and the filtered view is a real, shareable link). The job
+  filter is multi-select and OR-matching here — "raise craft" and "get
+  closer to customers" aren't mutually exclusive goals — unlike the ritual
+  library's picker, which stayed single-select since that wasn't in scope
+  for this phase.
+
 ## Authentication status
 
-There is no login yet. Every visitor gets a signed anonymous session cookie
-bound to an auto-created "personal workspace" team (`worker/session.ts`), so
-the app is fully usable before auth exists. `users.google_sub` already exists
-as a unique column — it's the merge key for the eventual identity-sharing with
+There is no *user* login yet. Every visitor gets a signed anonymous session
+cookie bound to an auto-created "personal workspace" team
+(`worker/session.ts`), so the app is fully usable before real auth exists.
+`users.google_sub` already exists as a unique column — it's the merge key
+for the eventual identity-sharing with
 [TeamRitualAudit](https://github.com/czhengjuarez/TeamRitualAudit), and the
-verified-Google-token auth module already lives in that repo
-(`src/auth/`), written app-agnostic so it ports here in Phase 2 without
-rewriting. See PLAN.md §7 for the full sequencing.
+verified-Google-token auth module already lives in that repo (`src/auth/`),
+written app-agnostic so it ports here in Phase 2's originally-planned slot
+without rewriting. See PLAN.md §7 for the full sequencing.
+
+**Admin login (Phase 5) is a different, already-shipped mechanism** —
+a single shared password gating `/api/admin/*`, unrelated to the anonymous
+team session or the eventual Google sign-in. See the Phase 5 section above.
 
 ## The planner UI, and one deliberate scope trim
 
@@ -199,10 +249,12 @@ switch to. Multi-plan support is explicitly deferred to Phase 7 (PLAN.md §9).
 
 ```
 worker/
-  index.ts       route mounting, session middleware
-  library.ts     categories/jobs/rituals routes
+  index.ts       route mounting, session + admin-auth middleware
+  library.ts     categories/jobs/rituals routes + ritual contribution (Phase 5)
   planner.ts     plans/slots/occurrences/reflections/warnings routes
   cadences.ts    cadence gallery, publish (plan -> template), clone (template -> plan)
+  admin.ts       approval queues, source verification, categories/jobs CRUD (Phase 5)
+  adminAuth.ts   password-gated session for /api/admin/* (Phase 5, ported from design-resources)
   schedule.ts    occurrence-generation date math (+ schedule.test.mjs) —
                  includes firstMatchingDate/derivePattern (Phase 4)
   ics-format.ts  pure RFC 5545 formatting (+ ics.test.mjs)
@@ -214,11 +266,13 @@ db/
   seed/          generated seed SQL (see scripts/seed-rituals.mjs, seed-cadences.mjs)
 scripts/         seed-rituals.mjs, seed-cadences.mjs — edit these, not the generated .sql
 src/
+  admin/         AdminLogin, CadenceQueue, RitualQueue, SourceVerification,
+                 CategoriesAdmin, JobsAdmin
   components/    Layout, ThemeToggle, Chip, RitualCard, Modal — built on Keel tokens
   pages/         PlanPage (the home screen), CadencesPage (the gallery), LibraryPage, AdminPage
-  planner/       CycleEditorModal, RitualPickerModal, OccurrenceDrawer, MonthCalendar,
-                 CampaignBanner, YearGrid, SubscribePanel, WarningsPanel,
-                 CadencePreviewModal, PublishModal, CreatePlanForm
-  hooks/         useTheme, useSession, useLibrary, usePlanner, useCadences
+  planner/       CycleEditorModal, RitualPickerModal (+ quick-create), OccurrenceDrawer,
+                 MonthCalendar, CampaignBanner, YearGrid, SubscribePanel, WarningsPanel,
+                 CadencePreviewModal, PublishModal, CreatePlanForm, JobPicker (Phase 5)
+  hooks/         useTheme, useSession, useLibrary, usePlanner, useCadences, useAdmin
   lib/calendar.ts  client-side month-grid + year-week layout (display only — see above)
 ```

@@ -6,3 +6,7 @@
 # with:
 #   openssl rand -base64 48
 SESSION_SECRET=replace-me-with-a-long-random-string
+
+# Gates /api/admin/* (see worker/adminAuth.ts). Pick any password for local dev.
+# For production: npx wrangler secret put ADMIN_PASSWORD
+ADMIN_PASSWORD=replace-me-with-a-local-dev-password

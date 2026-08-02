@@ -40,10 +40,13 @@ async function sendJSON<T>(url: string, method: string, body?: unknown): Promise
 }
 
 export interface CadenceFilters {
+  /** Comma-separated job slugs — matches ANY of them (PLAN.md §5.2: "pick one or more jobs"). */
   job?: string;
   discipline?: string;
   workMode?: string;
   teamSize?: number;
+  durationMin?: number;
+  durationMax?: number;
   q?: string;
 }
 
@@ -53,6 +56,8 @@ export function useCadenceGallery(filters: CadenceFilters) {
   if (filters.discipline) params.set("discipline", filters.discipline);
   if (filters.workMode) params.set("workMode", filters.workMode);
   if (filters.teamSize) params.set("teamSize", String(filters.teamSize));
+  if (filters.durationMin) params.set("durationMin", String(filters.durationMin));
+  if (filters.durationMax) params.set("durationMax", String(filters.durationMax));
   if (filters.q) params.set("q", filters.q);
 
   return useQuery({

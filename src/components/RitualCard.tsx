@@ -1,5 +1,7 @@
-import { cardClass, badgeClass, type KeelBadgeVariant } from "@ops-forward/keel";
-import { Clock, Repeat, CalendarRange } from "lucide-react";
+import { cardClass, badgeClass, buttonClass, type KeelBadgeVariant } from "@ops-forward/keel";
+import { Clock, Repeat, CalendarRange, Share2 } from "lucide-react";
+import { useSession } from "../hooks/useSession";
+import { useRequestPublicRitual } from "../hooks/useLibrary";
 import type { CategoryDto, RitualDto } from "../hooks/useLibrary";
 
 const LOAD_VARIANT: Record<RitualDto["load"], KeelBadgeVariant> = {
@@ -23,6 +25,13 @@ function engagementLabel(r: RitualDto): string {
 }
 
 export function RitualCard({ ritual, category }: { ritual: RitualDto; category?: CategoryDto }) {
+  const { data: session } = useSession();
+  const requestPublic = useRequestPublicRitual();
+  // Team-owned and not already public: this team can ask for public review
+  // (PLAN.md §5.4 — publishing publicly is an optional second step, not the
+  // default, for a ritual added the fast way).
+  const canRequestPublic = ritual.visibility === "team" && ritual.ownerTeamId === session?.team?.id;
+
   return (
     <div className={cardClass({ className: "p-4 flex flex-col gap-3 h-full" })}>
       <div className="flex items-start justify-between gap-2">
@@ -63,6 +72,20 @@ export function RitualCard({ ritual, category }: { ritual: RitualDto; category?:
             </span>
           ))}
         </div>
+      )}
+
+      {canRequestPublic && (
+        <button
+          className={buttonClass({ variant: "ghost", size: "sm" })}
+          onClick={(e) => {
+            e.stopPropagation();
+            requestPublic.mutate(ritual.id);
+          }}
+          disabled={requestPublic.isPending}
+        >
+          <Share2 size={20} strokeWidth={1.75} className="!w-3.5 !h-3.5" />
+          {requestPublic.isPending ? "Requesting…" : "Publish publicly"}
+        </button>
       )}
     </div>
   );

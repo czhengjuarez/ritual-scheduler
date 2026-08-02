@@ -42,15 +42,22 @@ cadences.get("/cadences", async (c) => {
   const session = c.get("session");
   const db = getDb(c.env.DB);
 
-  const jobSlug = c.req.query("job");
+  // The JTBD picker (PLAN.md §5.2) lets someone pick *more than one* job —
+  // "raise craft" and "get closer to customers" aren't mutually exclusive
+  // goals — so this matches ANY selected job, not just one.
+  const jobSlugs = c.req.query("job")?.split(",").map((s) => s.trim()).filter(Boolean) ?? [];
   const discipline = c.req.query("discipline");
   const workMode = c.req.query("workMode");
   const teamSize = c.req.query("teamSize") ? parseInt(c.req.query("teamSize")!, 10) : undefined;
+  const durationMin = c.req.query("durationMin") ? parseInt(c.req.query("durationMin")!, 10) : undefined;
+  const durationMax = c.req.query("durationMax") ? parseInt(c.req.query("durationMax")!, 10) : undefined;
   const q = c.req.query("q")?.trim();
 
   const filters = [visibleTo(session.teamId)];
   if (discipline) filters.push(eq(cadenceTemplates.discipline, discipline));
   if (workMode) filters.push(eq(cadenceTemplates.workMode, workMode));
+  if (durationMin !== undefined && !Number.isNaN(durationMin)) filters.push(gte(cadenceTemplates.durationWeeks, durationMin));
+  if (durationMax !== undefined && !Number.isNaN(durationMax)) filters.push(lte(cadenceTemplates.durationWeeks, durationMax));
   if (teamSize !== undefined && !Number.isNaN(teamSize)) {
     filters.push(
       and(
@@ -64,11 +71,12 @@ cadences.get("/cadences", async (c) => {
     filters.push(or(sql`${cadenceTemplates.name} LIKE ${term}`, sql`${cadenceTemplates.summary} LIKE ${term}`)!);
   }
 
-  let idFilter: number[] | null = null;
-  if (jobSlug) {
-    const [job] = await db.select({ id: jobs.id }).from(jobs).where(eq(jobs.slug, jobSlug)).limit(1);
-    const tagged = job ? await db.select({ id: cadenceJobs.cadenceTemplateId }).from(cadenceJobs).where(eq(cadenceJobs.jobId, job.id)) : [];
-    idFilter = tagged.map((t) => t.id);
+  if (jobSlugs.length) {
+    const matchedJobs = await db.select({ id: jobs.id }).from(jobs).where(inArray(jobs.slug, jobSlugs));
+    const tagged = matchedJobs.length
+      ? await db.select({ id: cadenceJobs.cadenceTemplateId }).from(cadenceJobs).where(inArray(cadenceJobs.jobId, matchedJobs.map((j) => j.id)))
+      : [];
+    const idFilter = [...new Set(tagged.map((t) => t.id))];
     filters.push(inArray(cadenceTemplates.id, idFilter.length ? idFilter : [-1]));
   }
 
