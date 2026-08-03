@@ -486,7 +486,7 @@ ai.post("/intent/converse", async (c) => {
           messages: [
             {
               role: "system",
-              content: `You're revising a recurring meeting cadence you already proposed. Currently proposed: ${itemLabels.join(", ")}. You MUST call classify_edit exactly once.`,
+              content: `You're revising a recurring meeting cadence you already proposed. Currently proposed (these are ALREADY in it — never list one of these in newItems, even if an earlier message in this conversation asked for it; only genuinely new items from the LATEST message belong in newItems): ${itemLabels.join(", ")}. You MUST call classify_edit exactly once.`,
             },
             ...history,
           ],
@@ -522,6 +522,15 @@ ai.post("/intent/converse", async (c) => {
     if (editResult.action === "add" && editResult.newItems.length === 0) {
       const lastUser = history.filter((m) => m.role === "user").pop()?.content;
       if (lastUser) editResult = { ...editResult, newItems: [lastUser] };
+    }
+    // Defensive dedup, not just a prompt instruction: verified live that a
+    // second consecutive "add" re-included the *first* add's item alongside
+    // the genuinely new one — the model latched onto that phrase still
+    // sitting in the conversation history rather than reasoning about
+    // what's already reflected in itemLabels. Drop anything that's already
+    // in the current proposal before resolving/appending.
+    if (editResult.action === "add" && editResult.newItems.length > 0) {
+      editResult = { ...editResult, newItems: editResult.newItems.filter((item) => !itemLabels.some((label) => matchesLabel(label, [item]))) };
     }
 
     if (editResult.action === "confirm") {
