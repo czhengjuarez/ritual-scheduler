@@ -205,38 +205,77 @@ function buildEditIntentTool(itemLabels: string[]) {
         properties: {
           action: {
             type: "string",
-            enum: ["confirm", "remove", "other"],
+            enum: ["confirm", "remove", "add", "other"],
             description:
               "confirm: they're happy with the current proposal as-is and ready to build it — including a plain 'yes'/'looks good'/'go ahead'. " +
               "remove: they want to drop one or more of the currently-proposed items (listed below), keeping everything else exactly as it is. " +
-              "other: anything else — a structural change, a new addition, a totally different request, or genuinely unclear — needs a fresh full response instead of a patch.",
+              "add: they want to add one or more NEW items on top of what's already proposed, keeping everything already there exactly as it is. " +
+              "other: anything else — changing an existing item's frequency, a bigger structural change, a totally different request, or genuinely unclear — needs a fresh full response instead of a patch.",
           },
           targets: {
             type: "array",
             items: { type: "string" },
-            description: `REQUIRED and non-empty whenever action='remove' — which of these currently-proposed items to drop, in their own words: ${itemLabels.join(", ")}. Empty array for confirm/other.`,
+            description: `REQUIRED and non-empty whenever action='remove' — which of these currently-proposed items to drop, in their own words: ${itemLabels.join(", ")}. Empty array otherwise.`,
+          },
+          newItems: {
+            type: "array",
+            items: { type: "string" },
+            description: "REQUIRED and non-empty whenever action='add' — short names for the new item(s) to add (e.g. 'product showcase', 'a retro'). Empty array otherwise.",
           },
           message: { type: "string", description: "short 1-sentence reply acknowledging the change (or confirming), not a full re-summary" },
         },
-        required: ["action", "targets", "message"],
+        required: ["action", "targets", "newItems", "message"],
       },
     },
   };
 }
 
 interface EditIntentResult {
-  action: "confirm" | "remove" | "other";
+  action: "confirm" | "remove" | "add" | "other";
   targets: string[];
+  newItems: string[];
   message: string;
 }
 
 function sanitizeEditIntentResult(raw: Record<string, unknown>): EditIntentResult {
-  const action = raw.action === "confirm" || raw.action === "remove" ? raw.action : "other";
+  const action = raw.action === "confirm" || raw.action === "remove" || raw.action === "add" ? raw.action : "other";
   return {
     action,
     targets: sanitizeStringArray(raw.targets),
+    newItems: sanitizeStringArray(raw.newItems),
     message: typeof raw.message === "string" && raw.message.trim() ? raw.message.trim() : "Got it.",
   };
+}
+
+/**
+ * Resolves each new theme name into a real rotation item — a genuine
+ * semantic-search match if one scores well, otherwise a plain label (same
+ * fallback rotation_items.label already supports for a manually-typed
+ * position). This is the one piece of an "add" edit that can't be a pure
+ * code patch like remove/confirm — finding what a new theme actually means
+ * needs a real lookup. Positions are placeholders, renumbered by the caller
+ * once appended to the real rotation array.
+ */
+async function resolveNewRotationItems(
+  env: Env,
+  db: Db,
+  newThemes: string[],
+): Promise<{ items: CadenceRotationItemDef[]; newCandidates: { slug: string; title: string }[] }> {
+  const items: CadenceRotationItemDef[] = [];
+  const newCandidates: { slug: string; title: string }[] = [];
+  for (const theme of newThemes) {
+    const matches = await semanticSearch(env, theme, { type: "ritual", topK: 1 });
+    if (matches.length && matches[0].score >= 0.55) {
+      const [ritual] = await db.select({ slug: rituals.slug, title: rituals.title }).from(rituals).where(eq(rituals.id, matches[0].refId)).limit(1);
+      if (ritual) {
+        items.push({ position: 0, ritualSlug: ritual.slug, label: null });
+        newCandidates.push(ritual);
+        continue;
+      }
+    }
+    items.push({ position: 0, ritualSlug: null, label: theme });
+  }
+  return { items, newCandidates };
 }
 
 interface ConverseMessage {
@@ -438,7 +477,7 @@ ai.post("/intent/converse", async (c) => {
       ...definition.standalone.map((o) => (o.ritualSlug ? (candidateTitleBySlug.get(o.ritualSlug) ?? o.ritualSlug) : "a one-off item")),
     ];
 
-    let editResult: EditIntentResult = { action: "other", targets: [], message: "" };
+    let editResult: EditIntentResult = { action: "other", targets: [], newItems: [], message: "" };
     try {
       const editCallResult = await runChatToolWithRetry(
         c.env.AI,
@@ -475,6 +514,14 @@ ai.post("/intent/converse", async (c) => {
     // through to a full regeneration.
     if (editResult.action === "remove" && editResult.targets.length === 0) {
       editResult = { ...editResult, targets: itemLabels.filter((label) => matchesLabel(editResult.message, [label])) };
+    }
+    // Same defensive gap for 'add': no fixed vocabulary to intersect
+    // against here (unlike remove's known itemLabels), so the fallback is
+    // simpler — just search on the user's own latest message verbatim
+    // rather than dropping the add request entirely.
+    if (editResult.action === "add" && editResult.newItems.length === 0) {
+      const lastUser = history.filter((m) => m.role === "user").pop()?.content;
+      if (lastUser) editResult = { ...editResult, newItems: [lastUser] };
     }
 
     if (editResult.action === "confirm") {
@@ -518,7 +565,49 @@ ai.post("/intent/converse", async (c) => {
       // Removing everything requested would leave nothing — fall through
       // to a full regeneration instead of erroring the turn out.
     }
-    // action === "other" (or an empty-result "remove"): fall through,
+
+    if (editResult.action === "add" && editResult.newItems.length > 0) {
+      // Unlike remove/confirm, finding what a new theme actually means
+      // needs a real semantic lookup — but everything already proposed is
+      // still untouched by construction, since we start from `definition`
+      // and only append. This is what was missing before: "add a product
+      // showcase" fell through to a full regeneration that didn't
+      // recognize it as an incremental addition to the prior state.
+      const { items: newRotationItems, newCandidates } = await resolveNewRotationItems(c.env, db, editResult.newItems);
+      const updated: CadenceDefinition =
+        definition.slots.length > 0
+          ? {
+              slots: [
+                { ...definition.slots[0], rotation: [...definition.slots[0].rotation, ...newRotationItems].map((r, i) => ({ ...r, position: i })) },
+                ...definition.slots.slice(1),
+              ],
+              standalone: definition.standalone,
+            }
+          : {
+              slots: [],
+              standalone: [
+                ...definition.standalone,
+                ...newRotationItems.map((r) => ({ ritualSlug: r.ritualSlug, titleOverride: r.label, dayOffset: 0, spanWeeks: null })),
+              ],
+            };
+      const run = await logRun(db, {
+        teamId: session.teamId,
+        kind: "suggest",
+        input: { converse: true, edit: "add", newItems: editResult.newItems },
+        output: updated,
+      });
+      return c.json({
+        action: "propose" as const,
+        message: editResult.message,
+        jobSlugs: [],
+        teamSize: null,
+        workMode: null,
+        horizonWeeks: null,
+        destination: null,
+        suggestion: { runId: run.id, definition: updated, durationWeeks, candidates: [...candidates, ...newCandidates] },
+      });
+    }
+    // action === "other" (or an empty-result remove/add): fall through,
     // ignore currentProposal, and proceed with the existing pipeline below
     // exactly as if this were a conversation with no proposal yet.
   }
