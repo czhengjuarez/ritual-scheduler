@@ -599,6 +599,21 @@ ai.post("/intent/converse", async (c) => {
                 ...newRotationItems.map((r) => ({ ritualSlug: r.ritualSlug, titleOverride: r.label, dayOffset: 0, spanWeeks: null })),
               ],
             };
+      // A longer rotation needs a longer plan, or the newest addition(s)
+      // may never get a single occurrence anywhere — verified live: adding
+      // a 5th item to a weekly rotation inside an unchanged 4-week plan
+      // meant that item never appeared on the calendar at all, not just
+      // later than expected (a 4-week plan only ever reaches positions
+      // 0..3 of a 5-position weekly rotation).
+      const primarySlot = updated.slots[0];
+      let adjustedDurationWeeks = durationWeeks;
+      if (primarySlot) {
+        const interval = Math.max(1, primarySlot.interval ?? 1);
+        const weeksPerOccurrence = primarySlot.freq === "monthly" ? interval * 4.345 : primarySlot.freq === "biweekly" ? 2 : interval;
+        const weeksNeededForFullCycle = Math.ceil(primarySlot.rotation.length * weeksPerOccurrence);
+        adjustedDurationWeeks = Math.max(durationWeeks, weeksNeededForFullCycle);
+      }
+
       const run = await logRun(db, {
         teamId: session.teamId,
         kind: "suggest",
@@ -607,13 +622,13 @@ ai.post("/intent/converse", async (c) => {
       });
       return c.json({
         action: "propose" as const,
-        message: editResult.message,
+        message: adjustedDurationWeeks > durationWeeks ? `${editResult.message} (extended the plan to ${adjustedDurationWeeks} weeks so every item in the rotation gets a turn.)` : editResult.message,
         jobSlugs: [],
         teamSize: null,
         workMode: null,
         horizonWeeks: null,
         destination: null,
-        suggestion: { runId: run.id, definition: updated, durationWeeks, candidates: [...candidates, ...newCandidates] },
+        suggestion: { runId: run.id, definition: updated, durationWeeks: adjustedDurationWeeks, candidates: [...candidates, ...newCandidates] },
       });
     }
     // action === "other" (or an empty-result remove/add): fall through,
