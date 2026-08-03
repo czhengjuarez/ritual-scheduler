@@ -1334,11 +1334,23 @@ ai.get("/plans/:planId/balance", async (c) => {
 
   if (!(await checkRateLimit(db, session.teamId))) return c.json({ error: "AI rate limit reached — try again in a bit" }, 429);
 
+  // Left-joined, not inner — an occurrence whose rotation position never
+  // resolved to a real ritual (a plain label like "Crit" or "Show and
+  // Tell", or a slot's own name with no rotation ritual at all) is still a
+  // real, scheduled meeting. The inner join here was silently dropping
+  // every one of those from every stat below (count, hours/week, category
+  // mix, gap weeks) — verified live: a plan with a real multi-item weekly
+  // rotation, half of it label-only, reported half the true occurrence
+  // count and called the team "dangerously under-scheduled" when the
+  // calendar showed regular weekly activity. computePlanWarnings below
+  // stays an inner join deliberately — every one of its rules (min-gap,
+  // avoid-near, heavy-load, prep-lead) reads ritual-only metadata that a
+  // label-only occurrence doesn't have, so it genuinely can't participate.
   const [rows, warnings] = await Promise.all([
     db
       .select({ occurrence: occurrences, ritual: rituals, category: categories })
       .from(occurrences)
-      .innerJoin(rituals, eq(rituals.id, occurrences.ritualId))
+      .leftJoin(rituals, eq(rituals.id, occurrences.ritualId))
       .leftJoin(categories, eq(categories.id, rituals.categoryId))
       .where(and(eq(occurrences.planId, plan.id), eq(occurrences.status, "planned"))),
     computePlanWarnings(db, plan),
@@ -1352,7 +1364,10 @@ ai.get("/plans/:planId/balance", async (c) => {
   for (const row of rows) {
     const categoryName = row.category?.name ?? "Uncategorized";
     categoryCounts.set(categoryName, (categoryCounts.get(categoryName) ?? 0) + 1);
-    totalMinutes += row.ritual.durationMin ?? 30;
+    // Prefer the ritual's own duration, then the occurrence's own stored
+    // duration (set directly on manually-typed/label-only positions), then
+    // a plain default — row.ritual is null for a label-only occurrence.
+    totalMinutes += row.ritual?.durationMin ?? row.occurrence.durationMin ?? 30;
     const wk = weekBucket(row.occurrence.date);
     occurrencesByWeek.set(wk, (occurrencesByWeek.get(wk) ?? 0) + 1);
   }
